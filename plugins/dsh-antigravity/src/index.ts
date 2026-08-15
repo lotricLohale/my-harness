@@ -8,6 +8,7 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-llm'
+import { registerModelActivity } from './activity.js'
 import { AntigravityAdapter } from './adapter.js'
 import { AntigravityAuth, type AntigravityAccountMeta } from './auth.js'
 import { registerCommands } from './commands.js'
@@ -69,6 +70,7 @@ export function apply(ctx: Context, config: Config): void {
     ctx.logger.warn('antigravity legacy credential migration failed')
     ctx.logger.warn(error)
   })
+  registerModelActivity(ctx)
   ctx.llm.registerAdapter([PROVIDER], new AntigravityAdapter(provider, auth))
   registerCommands(ctx, auth)
   registerWebRoutes(ctx, auth)
