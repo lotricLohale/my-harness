@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=none
+- insert:
+    - id: llm-oauth
+      name: dsh-oauth
+      config:
+        modules:
+          - antigravity
+          - xai
+        antigravity:
+          credentialRef: ANTIGRAVITY_OAUTH
+          accounts: []
+        xai:
+          credentialRef: XAI_OAUTH
+          accounts: []

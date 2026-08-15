@@ -12,7 +12,7 @@
     "core:update": "bash scripts/update-core.sh",
     "ui:check": "bash scripts/check-ui-update.sh",
     "ui:update": "bash scripts/update-ui.sh",
-    "plugin:build": "pnpm --dir plugins/dsh-antigravity build",
-    "plugin:test": "pnpm --dir plugins/dsh-antigravity test"
+    "plugin:build": "pnpm --dir plugins/dsh-oauth build",
+    "plugin:test": "pnpm --dir plugins/dsh-oauth test"
   }
 }

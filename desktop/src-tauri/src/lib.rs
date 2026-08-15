@@ -195,15 +195,32 @@ fn show_harness(app: &AppHandle) -> Result<(), String> {
         .map_err(|_| "URL 锁已损坏")?
         .clone()
         .ok_or("Harness URL 不存在")?;
-    let window = WebviewWindowBuilder::new(
-        app,
-        "harness",
-        WebviewUrl::External(url.parse().map_err(|error| format!("无效 URL：{error}"))?),
-    )
-    .title("MDSH")
-    .inner_size(1280.0, 860.0)
-    .build()
-    .map_err(|error| error.to_string())?;
+        let window = WebviewWindowBuilder::new(
+            app,
+            "harness",
+            WebviewUrl::External(url.parse().map_err(|error| format!("无效 URL：{error}"))?),
+        )
+        .title("MDSH")
+        .inner_size(1280.0, 860.0)
+        .initialization_script(
+            r#"
+            (function() {
+                const style = document.createElement('style');
+                style.setAttribute('data-mdsh-hide-update-trigger', '');
+                style.textContent = `
+                    button[aria-label="检查更新"],
+                    button[aria-label="Check for updates"],
+                    button[title="检查更新"],
+                    button[title="Check for updates"] {
+                        display: none !important;
+                    }
+                `;
+                (document.head || document.documentElement).appendChild(style);
+            })();
+            "#,
+        )
+        .build()
+        .map_err(|error| error.to_string())?;
     #[cfg(target_os = "macos")]
     set_app_icon()?;
     window.set_focus().map_err(|error| error.to_string())?;

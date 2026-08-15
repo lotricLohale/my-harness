@@ -10,7 +10,8 @@
 - 复用 `pi-antigravity` 的模型目录、OAuth、原生流和账号用量查询
 - `/antigravity-login`：启动 Google OAuth PKCE 登录并打开系统浏览器；同一 email 重复登录会更新同一个账号
 - `/antigravity-accounts` 和 `/antigravity-doctor`：显示脱敏账号状态
-- Web Host 同源接口：`GET /api/antigravity/accounts`、`POST /api/antigravity/login`
+- `/antigravity-logout [id]`：删除指定授权账号；不传参数时删除当前账号
+- Web Host 同源接口：`GET /api/antigravity/accounts`、`DELETE /api/antigravity/accounts/:id`、`POST /api/antigravity/login`
 - 每个账号的 OAuth JSON 保存在独立 `credentialRef`；settings 只保存 `id/email/credentialRef/enabled/priority/exhaustedUntil` 元数据
 - 兼容旧的 `ANTIGRAVITY_OAUTH`，启动后会纳入账号池
 - 请求按启用、未冷却、高优先级账号选择；首个可见 chunk 前遇到明确 quota/rate-limit 才会短冷却并切换账号
@@ -29,7 +30,7 @@
 
 ## 设置页边界
 
-DSH core 的 Models `ProviderEditor` 当前没有第三方账号管理扩展槽；因此本包不修改 core UI，而是通过自己的 browser client bundle 注册独立 settings.section：导航名 `Antigravity`，排序在 Models 后面。页面只提供“添加账号”和“刷新用量”，不做删除/启停编辑；启停仍通过 settings 元数据手动改。
+DSH core 的 Models `ProviderEditor` 当前没有第三方账号管理扩展槽；因此本包不修改 core UI，而是通过自己的 browser client bundle 注册独立 settings.section：导航名 `Antigravity`，排序在 Models 后面。页面提供“添加账号”、“刷新用量”和“删除账号”；启停仍通过 settings 元数据手动改。
 
 ## 限制
 

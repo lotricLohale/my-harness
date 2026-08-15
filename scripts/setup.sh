@@ -3,19 +3,19 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 core="$root/core"
-plugin="$root/plugins/dsh-antigravity"
+plugin="$root/plugins/dsh-oauth"
 desktop="$root/desktop"
 
 # core 是只读 submodule；跳过其仓库级 Git hook 安装脚本。
 CI=true pnpm --dir "$core" install --frozen-lockfile --ignore-scripts
 node "$core/packages/subprocess/subprocess-local/scripts/ensure-spawn-helper.mjs"
 (
-  cd "$core"
-  ./node_modules/.bin/tsc -b tsconfig.host.json
-  ./node_modules/.bin/tsdown --env.DSH_BUILD_FACE host
-  ./node_modules/.bin/tsc -b tsconfig.client.json
-  ./node_modules/.bin/tsdown --env.DSH_BUILD_FACE client
-  (cd apps/web && ./node_modules/.bin/vite build)
+	cd "$core"
+	./node_modules/.bin/tsc -b tsconfig.host.json
+	./node_modules/.bin/tsdown --env.DSH_BUILD_FACE host
+	./node_modules/.bin/tsc -b tsconfig.client.json
+	./node_modules/.bin/tsdown --env.DSH_BUILD_FACE client
+	(cd apps/web && ./node_modules/.bin/vite build)
 )
 CI=true pnpm --dir "$plugin" install --frozen-lockfile
 pnpm --dir "$plugin" build

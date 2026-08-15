@@ -1,0 +1,9 @@
+diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
+--- a/src/auth/oauth.ts
++++ b/src/auth/oauth.ts
+@@ -146 +146 @@ function startCallbackServer(expectedState: string): Promise<CallbackServer> {
+-      res.end("Antigravity authentication complete. You can close this window and return to Pi.");
++      res.end("Antigravity authentication complete. You can close this window and return to DSH.");
+@@ -193 +193 @@ export async function loginAntigravity(
+-      instructions: "Complete Google sign-in. Pi will capture the local callback.",
++      instructions: "Complete Google sign-in. DSH will capture the local callback.",

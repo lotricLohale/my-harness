@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=none
+- insert:
+    - id: llm-xai
+      name: dsh-xai
+      config:
+        credentialRef: XAI_OAUTH
+        accounts: []

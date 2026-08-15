@@ -1,0 +1,490 @@
+import { createHash } from "node:crypto";
+import type { Context } from "@deepseek-ai/cordis";
+import {
+	credentialRef,
+	type CredentialRef,
+} from "@deepseek-ai/dsh-credentials";
+import { LlmError } from "@deepseek-ai/dsh-llm";
+import type {
+	OAuthCredentials,
+	OAuthLoginCallbacks,
+} from "@earendil-works/pi-ai";
+import type { XaiOAuthService } from "./oauth.js";
+import { fetchAccountUsage } from "./usage.js";
+import { serializeQuotaGroups, type XaiAccountPayload } from "./web-data.js";
+
+const LEGACY_REF = "XAI_OAUTH";
+const COOLDOWN_MS = 60_000;
+
+interface AuthPrompt {
+	url: string;
+	instructions?: string;
+}
+
+/** 设置中保存的账号元数据；这里不能出现 access/refresh。 */
+export interface XaiAccountMeta {
+	id: string;
+	email?: string;
+	username?: string;
+	credentialRef: string;
+	enabled?: boolean;
+	priority?: number;
+	exhaustedUntil?: number;
+}
+
+/** OAuth 登录启动结果；completion 在浏览器回调完成后写入凭据。 */
+export interface LoginAttempt extends AuthPrompt {
+	completion: Promise<void>;
+}
+
+export interface XaiAuthConfig {
+	credentialRef?: string;
+	accounts?: XaiAccountMeta[];
+}
+
+/** 账号候选按启用、冷却和优先级排序。 */
+export function accountCandidates(
+	accounts: readonly XaiAccountMeta[],
+	now = Date.now(),
+): XaiAccountMeta[] {
+	return accounts
+		.filter(
+			(account) =>
+				account.enabled !== false && (account.exhaustedUntil ?? 0) <= now,
+		)
+		.sort(
+			(a, b) =>
+				(b.priority ?? 0) - (a.priority ?? 0) || a.id.localeCompare(b.id),
+		);
+}
+
+/** 脱敏显示账号。 */
+export function accountLabel(account: XaiAccountMeta): string {
+	return account.email ?? account.username ?? account.id;
+}
+
+function identityOf(credentials: OAuthCredentials): {
+	email?: string;
+	username?: string;
+} {
+	const email =
+		typeof credentials["email"] === "string" &&
+		(credentials["email"] as string).length > 0
+			? (credentials["email"] as string)
+			: undefined;
+	const username =
+		typeof credentials["username"] === "string" &&
+		(credentials["username"] as string).length > 0
+			? (credentials["username"] as string)
+			: undefined;
+	return { email, username };
+}
+
+function safeId(seed: string): string {
+	const slug =
+		seed
+			.toLowerCase()
+			.replace(/[^a-z0-9_]+/g, "_")
+			.replace(/^([^a-z_])/, "_$1")
+			.slice(0, 32) || "account";
+	return `${slug}_${createHash("sha256").update(seed).digest("hex").slice(0, 8)}`;
+}
+
+function uniqueRef(id: string): string {
+	return `XAI_OAUTH_${safeId(id).toUpperCase()}`;
+}
+
+function withoutSecrets(accounts: readonly XaiAccountMeta[]): XaiAccountMeta[] {
+	return accounts.map((account) => ({
+		id: account.id,
+		...(account.email === undefined ? {} : { email: account.email }),
+		...(account.username === undefined ? {} : { username: account.username }),
+		credentialRef: account.credentialRef,
+		...(account.enabled === undefined ? {} : { enabled: account.enabled }),
+		...(account.priority === undefined ? {} : { priority: account.priority }),
+		...(account.exhaustedUntil === undefined
+			? {}
+			: { exhaustedUntil: account.exhaustedUntil }),
+	}));
+}
+
+/** 解析、刷新并选择 xAI 多账号 OAuth 凭据。 */
+export class XaiAuth {
+	readonly legacyRef: CredentialRef;
+	private refreshTasks = new Map<string, Promise<OAuthCredentials>>();
+	private loginTask: Promise<void> | undefined;
+	private fallbackAccounts: XaiAccountMeta[] = [];
+	private lastAccountId: string | undefined;
+	private writeConfig: ((patch: object) => Promise<void>) | undefined;
+
+	constructor(
+		private readonly ctx: Context,
+		private readonly config: () => XaiAuthConfig,
+		private readonly oauth: XaiOAuthService,
+	) {
+		this.legacyRef = credentialRef(config().credentialRef ?? LEGACY_REF);
+	}
+
+	/** 接入 settings 后允许登录和冷却回写非秘密账号元数据。 */
+	setConfigWriter(writeConfig: (patch: object) => Promise<void>): void {
+		this.writeConfig = writeConfig;
+	}
+
+	/** 将旧版单账号凭据纳入账号池。 */
+	async initialize(): Promise<void> {
+		await this.includeLegacyCredential();
+	}
+
+	/** 是否有至少一个已配置账号，用于决定模型列表是否显示该分组。 */
+	hasAuthorizedAccount(): boolean {
+		return this.currentAccounts().length > 0;
+	}
+
+	/** 返回设置页和 provider 目录显示用的账号摘要。 */
+	displayName(): string {
+		const accounts = this.currentAccounts();
+		if (accounts.length === 0) return "xAI (Grok)（未授权）";
+		if (accounts.length === 1)
+			return `xAI (Grok)（${accountLabel(accounts[0]!)}）`;
+		const current =
+			accounts.find((account) => account.id === this.lastAccountId) ??
+			accountCandidates(accounts)[0] ??
+			accounts[0]!;
+		return `xAI (Grok)（${accounts.length} 个账号，当前 ${accountLabel(current)}）`;
+	}
+
+	/** 返回一次请求可尝试的账号候选。 */
+	async candidates(): Promise<XaiAccountMeta[]> {
+		await this.includeLegacyCredential();
+		return accountCandidates(this.currentAccounts());
+	}
+
+	/** 为指定账号解析可直接交给上游 provider 的 apiKey 字符串。 */
+	async apiKeyFor(account: XaiAccountMeta): Promise<string> {
+		const ref = credentialRef(account.credentialRef);
+		const hit = await this.ctx.credentials.resolve(ref);
+		if (hit === undefined) {
+			throw new LlmError(
+				`xAI account ${accountLabel(account)} has no credential (${ref})`,
+				"MISSING_CREDENTIAL",
+			);
+		}
+		const credentials = parseCredentials(hit.value);
+		const current =
+			credentials.expires > Date.now()
+				? credentials
+				: await this.refresh(ref, credentials);
+		this.lastAccountId = account.id;
+		return this.oauth.getApiKey(current);
+	}
+
+	/** 首 chunk 前撞到限额时短冷却该账号。 */
+	async markExhausted(
+		account: XaiAccountMeta,
+		exhaustedUntil = Date.now() + COOLDOWN_MS,
+	): Promise<void> {
+		const next = this.currentAccounts().map((item) =>
+			item.id === account.id ? { ...item, exhaustedUntil } : item,
+		);
+		await this.storeAccounts(next);
+	}
+
+	/** 启动一次登录并立即返回授权 URL；重复调用复用正在进行的登录。 */
+	async beginLogin(): Promise<LoginAttempt> {
+		if (this.loginTask !== undefined) {
+			throw new Error("xAI login is already waiting for a browser callback");
+		}
+		const prompt = Promise.withResolvers<AuthPrompt>();
+		const callbacks: OAuthLoginCallbacks = {
+			onAuth: (value) => {
+				prompt.resolve(value);
+			},
+			onDeviceCode: () => {},
+			onPrompt: () =>
+				Promise.reject(
+					new Error("xAI login requested unsupported interactive input"),
+				),
+			onSelect: () => Promise.resolve(undefined),
+		};
+		const completion = this.oauth
+			.login(callbacks)
+			.then(async (credentials) => {
+				await this.saveLogin(credentials);
+			})
+			.finally(() => {
+				this.loginTask = undefined;
+			});
+		this.loginTask = completion;
+		void completion.catch((error: unknown) => {
+			this.ctx.logger.error("xai login failed");
+			this.ctx.logger.error(error);
+		});
+		const details = await prompt.promise;
+		return { ...details, completion };
+	}
+
+	/** OAuth 是否仍在等待浏览器回调。 */
+	loginPending(): boolean {
+		return this.loginTask !== undefined;
+	}
+
+	/** 返回浏览器可见账号状态；这里和 settings 都不能包含 token。 */
+	async accountPayloads(includeQuota = true): Promise<XaiAccountPayload[]> {
+		await this.includeLegacyCredential();
+		return Promise.all(
+			this.currentAccounts().map(async (account) => {
+				const ref = credentialRef(account.credentialRef);
+				const info = await this.ctx.credentials.describe(ref);
+				let expires: string | undefined;
+				let quota: XaiAccountPayload["quota"];
+				let quotaError: string | undefined;
+				if (info.configured) {
+					const hit = await this.ctx.credentials.resolve(ref);
+					if (hit !== undefined) {
+						try {
+							expires = new Date(
+								parseCredentials(hit.value).expires,
+							).toISOString();
+							if (includeQuota) {
+								const apiKey = await this.apiKeyFor(account);
+								const usage = await fetchAccountUsage(apiKey);
+								quota = serializeQuotaGroups(usage);
+							}
+						} catch (error) {
+							quotaError =
+								error instanceof Error ? error.message : String(error);
+						}
+					}
+				}
+				return {
+					id: account.id,
+					...(account.email === undefined ? {} : { email: account.email }),
+					...(account.username === undefined
+						? {}
+						: { username: account.username }),
+					enabled: account.enabled !== false,
+					priority: account.priority ?? 0,
+					configured: info.configured,
+					...(expires === undefined ? {} : { expires }),
+					...(account.exhaustedUntil === undefined
+						? {}
+						: {
+								exhaustedUntil: new Date(account.exhaustedUntil).toISOString(),
+							}),
+					...(quota === undefined ? {} : { quota }),
+					...(quotaError === undefined ? {} : { quotaError }),
+				};
+			}),
+		);
+	}
+
+	/** 删除指定账号的元数据和对应凭据。 */
+	async removeAccount(id: string): Promise<XaiAccountMeta> {
+		const account = this.currentAccounts().find((item) => item.id === id);
+		if (account === undefined) {
+			throw new Error(`xAI account "${id}" was not found`);
+		}
+		const remaining = this.currentAccounts().filter((item) => item.id !== id);
+		await this.storeAccounts(remaining);
+		this.fallbackAccounts = this.fallbackAccounts.filter(
+			(item) => item.id !== id,
+		);
+		if (this.lastAccountId === id) this.lastAccountId = undefined;
+		await this.ctx.credentials.unset(credentialRef(account.credentialRef));
+		return account;
+	}
+
+	/** 返回不含 secret 的账号状态。 */
+	async status(): Promise<string> {
+		await this.includeLegacyCredential();
+		const lines = [`accounts=${this.currentAccounts().length}`];
+		for (const account of this.currentAccounts()) {
+			const ref = credentialRef(account.credentialRef);
+			const info = await this.ctx.credentials.describe(ref);
+			let expires = "unknown";
+			if (info.configured) {
+				const hit = await this.ctx.credentials.resolve(ref);
+				if (hit !== undefined) {
+					try {
+						expires = new Date(
+							parseCredentials(hit.value).expires,
+						).toISOString();
+					} catch {
+						expires = "invalid";
+					}
+				}
+			}
+			lines.push(
+				[
+					`- id=${account.id}`,
+					`email=${account.email ?? account.username ?? "unknown"}`,
+					`credential=${ref}`,
+					`enabled=${String(account.enabled !== false)}`,
+					`priority=${String(account.priority ?? 0)}`,
+					`configured=${String(info.configured)}`,
+					`source=${info.source ?? "unknown"}`,
+					`writable=${String(info.writable)}`,
+					`expires=${expires}`,
+					`exhaustedUntil=${account.exhaustedUntil === undefined ? "none" : new Date(account.exhaustedUntil).toISOString()}`,
+				].join(" "),
+			);
+		}
+		return lines.join("\n");
+	}
+
+	private currentAccounts(): XaiAccountMeta[] {
+		return withoutSecrets([
+			...(this.config().accounts ?? []),
+			...this.fallbackAccounts,
+		]);
+	}
+
+	private async saveLogin(credentials: OAuthCredentials): Promise<void> {
+		const identity = identityOf(credentials);
+		const accounts = this.currentAccounts();
+		const matchKey = identity.email ?? identity.username;
+		const existing =
+			matchKey === undefined
+				? undefined
+				: accounts.find(
+						(account) =>
+							account.email === matchKey || account.username === matchKey,
+					);
+		const id = existing?.id ?? safeId(matchKey ?? `account_${Date.now()}`);
+		const nextAccount: XaiAccountMeta = {
+			id,
+			...(identity.email === undefined ? {} : { email: identity.email }),
+			...(identity.username === undefined
+				? {}
+				: { username: identity.username }),
+			credentialRef: existing?.credentialRef ?? uniqueRef(id),
+			enabled: existing?.enabled ?? true,
+			priority: existing?.priority ?? 0,
+		};
+		await this.ctx.credentials.set(
+			credentialRef(nextAccount.credentialRef),
+			JSON.stringify(credentials),
+		);
+		await this.storeAccounts([
+			...accounts.filter((account) => account.id !== id),
+			nextAccount,
+		]);
+		this.lastAccountId = id;
+	}
+
+	private async includeLegacyCredential(): Promise<void> {
+		if (
+			this.currentAccounts().some(
+				(account) => account.credentialRef === this.legacyRef,
+			)
+		)
+			return;
+		const hit = await this.ctx.credentials.resolve(this.legacyRef);
+		if (hit === undefined) return;
+		let identity: { email?: string; username?: string };
+		try {
+			identity = identityOf(parseCredentials(hit.value));
+		} catch {
+			identity = {};
+		}
+		const matchKey = identity.email ?? identity.username;
+		const id = safeId(matchKey ?? "legacy");
+		if (
+			this.currentAccounts().some(
+				(account) =>
+					account.id === id ||
+					(matchKey !== undefined &&
+						(account.email === matchKey || account.username === matchKey)),
+			)
+		) {
+			return;
+		}
+		await this.storeAccounts([
+			...this.currentAccounts(),
+			{
+				id,
+				...(identity.email === undefined ? {} : { email: identity.email }),
+				...(identity.username === undefined
+					? {}
+					: { username: identity.username }),
+				credentialRef: this.legacyRef,
+				enabled: true,
+				priority: 0,
+			},
+		]);
+	}
+
+	private async storeAccounts(accounts: XaiAccountMeta[]): Promise<void> {
+		const clean = withoutSecrets(accounts);
+		if (this.writeConfig === undefined) {
+			this.fallbackAccounts = clean;
+			return;
+		}
+		await this.writeConfig({ accounts: clean });
+	}
+
+	private refresh(
+		ref: CredentialRef,
+		credentials: OAuthCredentials,
+	): Promise<OAuthCredentials> {
+		const key = String(ref);
+		const existing = this.refreshTasks.get(key);
+		if (existing !== undefined) return existing;
+		const task = this.refreshAndStore(ref, credentials).finally(() => {
+			this.refreshTasks.delete(key);
+		});
+		this.refreshTasks.set(key, task);
+		return task;
+	}
+
+	private async refreshAndStore(
+		ref: CredentialRef,
+		credentials: OAuthCredentials,
+	): Promise<OAuthCredentials> {
+		const info = await this.ctx.credentials.describe(ref);
+		if (!info.writable) {
+			throw new LlmError(
+				`xAI credentials from ${info.source ?? "a read-only source"} cannot store a refreshed token; run /xai-login`,
+				"CREDENTIAL_READ_ONLY",
+			);
+		}
+		const refreshed = await this.oauth.refreshToken(credentials);
+		await this.ctx.credentials.set(ref, JSON.stringify(refreshed));
+		return refreshed;
+	}
+}
+
+/** 在持久化边界验证 OAuth JSON 的请求所需字段。 */
+export function parseCredentials(value: string): OAuthCredentials {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch (error) {
+		throw new LlmError(
+			"xAI credentials contain invalid JSON; run /xai-login",
+			"INVALID_CREDENTIAL",
+			{ cause: error },
+		);
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new LlmError(
+			"xAI credentials must be a JSON object; run /xai-login",
+			"INVALID_CREDENTIAL",
+		);
+	}
+	const record = parsed as Record<string, unknown>;
+	if (
+		typeof record["access"] !== "string" ||
+		record["access"].length === 0 ||
+		typeof record["refresh"] !== "string" ||
+		record["refresh"].length === 0 ||
+		typeof record["expires"] !== "number" ||
+		!Number.isFinite(record["expires"])
+	) {
+		throw new LlmError(
+			"xAI credentials are incomplete; run /xai-login",
+			"INVALID_CREDENTIAL",
+		);
+	}
+	return parsed as OAuthCredentials;
+}
