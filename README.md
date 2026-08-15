@@ -6,6 +6,7 @@ Tauri v2 桌面外壳，原样运行 DeepSeek Harness，并通过仓库外的 Co
 
 - `core/`：`deepseek-ai/deepseek-harness` Git submodule，不在本仓库修改
 - `plugins/dsh-antigravity/`：Antigravity LLM 外部插件
+- `web-ui/`：`zhu1090093659/dsh-web-ui` Git submodule，可独立检查和更新
 - `desktop/`：启动并托管 DSH Web 的 Tauri 应用
 
 ## 初始化
@@ -19,7 +20,7 @@ pnpm bootstrap
 pnpm dev
 ```
 
-`pnpm bootstrap` 会安装并构建 core 的 host/client 产物和 Web 前端，打包插件，再通过 DSH CLI 安装到 Web profile。它不修改 `core/` 的 tracked 文件。
+`pnpm bootstrap` 会安装并构建 core、Antigravity 插件和 `dsh-web-ui` 全家桶，再通过 DSH CLI 安装到 Web profile。首次初始化默认启用“鲸吟（Whale Song）”皮肤和暗色“深海夜航调”；之后保留用户自行选择的皮肤与明暗设置。它不修改 `core/` 或 `web-ui/` 的 tracked 文件。
 
 ## Antigravity
 
@@ -52,6 +53,22 @@ pnpm core:update
 ```
 
 更新不会自动提交新的 submodule 指针。
+
+## 更新 UI 库
+
+只检查：
+
+```bash
+pnpm ui:check
+```
+
+显式更新、重新构建并安装：
+
+```bash
+pnpm ui:update
+```
+
+状态栏菜单也提供“检查 UI 库更新”；检查不会自动改变 `web-ui/` 子模块指针。
 
 ## 当前边界
 

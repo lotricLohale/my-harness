@@ -1,3 +1,6 @@
 [submodule "core"]
 	path = core
 	url = https://github.com/deepseek-ai/deepseek-harness.git
+[submodule "web-ui"]
+	path = web-ui
+	url = https://github.com/zhu1090093659/dsh-web-ui.git

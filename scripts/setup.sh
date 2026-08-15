@@ -21,12 +21,7 @@ CI=true pnpm --dir "$plugin" install --frozen-lockfile
 pnpm --dir "$plugin" build
 CI=true pnpm --dir "$desktop" install --frozen-lockfile
 
-archive="$(cd "$plugin" && pnpm pack --pack-destination "$plugin" | tail -n 1)"
-archive_path="$plugin/$archive"
-(
-  cd "$core"
-  node --import tsx/esm apps/cli/src/bin.ts plugin --profile web add "$archive_path"
-)
-rm -f "$archive_path"
+bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$plugin"
+bash "$root/scripts/setup-ui.sh"
 
 echo '初始化完成。运行 pnpm dev 启动 Tauri。'
