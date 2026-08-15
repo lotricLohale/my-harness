@@ -35,7 +35,7 @@ pnpm dev
 /antigravity-doctor
 ```
 
-然后在模型选择器选择 `antigravity` provider。OAuth token 存在 Harness credentials 服务的 `ANTIGRAVITY_OAUTH` 引用中。
+然后在“设置 → 模型”确认 Antigravity 行显示已授权邮箱，并在模型选择器选择 `antigravity` provider。“设置 → Antigravity”提供“添加账号”和“刷新用量”，逐账号显示五小时及每周剩余额度；也可使用 `/antigravity-accounts` 查看脱敏账号池。OAuth token 分别保存在 Harness credentials 服务中，settings 只保存邮箱和 credential reference 等非秘密元数据。请求在首个可见输出前遇到明确额度错误时会自动切换到下一个可用账号。
 
 ## 更新核心
 

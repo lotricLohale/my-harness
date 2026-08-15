@@ -8,6 +8,7 @@ import type {
   SimpleStreamOptions,
 } from '@earendil-works/pi-ai'
 import registerAntigravity from './upstream-runtime.js'
+import { fetchAccountUsage, type UpstreamQuotaGroup } from './upstream-usage.js'
 
 /** pi-antigravity 注册的静态模型字段。 */
 export interface AntigravityModelConfig {
@@ -40,6 +41,18 @@ export interface AntigravityProvider {
 }
 
 /** 捕获上游 provider，而不启动 Pi Coding Agent 扩展宿主。 */
+export interface AntigravityUsageSummary {
+  groups: UpstreamQuotaGroup[]
+}
+
+/**
+ * 读取上游账号额度；pi-antigravity 未公开 package export，只能集中使用固定 0.2.9 的 src 子路径。
+ */
+export async function fetchUpstreamUsage(apiKey: string): Promise<AntigravityUsageSummary> {
+  const usage = await fetchAccountUsage(apiKey)
+  return { groups: usage.groups }
+}
+
 export function loadUpstreamProvider(): AntigravityProvider {
   let provider: AntigravityProvider | undefined
   registerAntigravity({

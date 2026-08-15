@@ -3,3 +3,4 @@
       name: dsh-antigravity
       config:
         credentialRef: ANTIGRAVITY_OAUTH
+        accounts: []

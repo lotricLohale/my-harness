@@ -11,3 +11,5 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-telemetry@0.84.2'
   - '@earendil-works/pi-tui@0.84.2'
   - pi-antigravity@0.2.9
+patchedDependencies:
+  pi-antigravity@0.2.9: patches/pi-antigravity@0.2.9.patch
