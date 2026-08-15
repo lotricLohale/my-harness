@@ -1,0 +1,21 @@
+:root {
+  color: #eef2ff;
+  background: #0a0d14;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+main { width: min(440px, calc(100vw - 48px)); }
+.eyebrow { color: #7c8cff; font-size: 12px; font-weight: 700; letter-spacing: .18em; }
+h1 { margin: 8px 0; font-size: 38px; }
+.subtitle { color: #9aa4b8; line-height: 1.6; }
+.status-card { display: flex; gap: 14px; align-items: center; margin: 28px 0; padding: 18px; border: 1px solid #252c3a; border-radius: 14px; background: #111620; }
+.status-card small { display: block; margin-top: 4px; color: #7d8798; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: #f4b942; box-shadow: 0 0 16px currentColor; }
+.dot.ready { background: #48d597; }
+.dot.failed { background: #f06d76; }
+.actions { display: flex; gap: 12px; }
+button { flex: 1; border: 0; border-radius: 10px; padding: 12px 16px; color: white; background: #596dff; font-weight: 650; cursor: pointer; }
+button:disabled { cursor: wait; opacity: .45; }
+button.secondary { background: #242b39; }
+pre { min-height: 40px; white-space: pre-wrap; color: #aeb8ca; font: 12px/1.5 ui-monospace, monospace; }

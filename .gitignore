@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+*.log
+plugins/*/node_modules/
+plugins/*/lib/
+plugins/*/dist/
+plugins/*/*.tgz
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/

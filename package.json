@@ -1,0 +1,16 @@
+{
+  "name": "my-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "bootstrap": "bash scripts/setup.sh",
+    "dev": "pnpm --dir desktop tauri dev",
+    "build": "pnpm --dir desktop tauri build",
+    "core:check": "bash scripts/check-core-update.sh",
+    "core:update": "bash scripts/update-core.sh",
+    "plugin:build": "pnpm --dir plugins/dsh-antigravity build",
+    "plugin:test": "pnpm --dir plugins/dsh-antigravity test"
+  }
+}
