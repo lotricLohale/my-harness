@@ -7,3 +7,24 @@ diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
 @@ -193 +193 @@ export async function loginAntigravity(
 -      instructions: "Complete Google sign-in. Pi will capture the local callback.",
 +      instructions: "Complete Google sign-in. DSH will capture the local callback.",
+diff --git a/src/stream/stream.ts b/src/stream/stream.ts
+--- a/src/stream/stream.ts
++++ b/src/stream/stream.ts
+@@ -384,6 +384,9 @@ export function friendlyAntigravityError(status: number | undefined, text: string
+     if (/Request contains an invalid argument/i.test(msg)) {
+       return `Antigravity rejected this request (${msg}). Next: retry once; if it keeps failing, switch models or re-login.`;
+     }
++    if (/location is not supported|FAILED_PRECONDITION/i.test(msg)) {
++      return `Antigravity blocked this request because the current account or network location is not supported. Next: switch network/VPN, or use another Google account whose region is allowed. Do not re-login expecting a different result. Backend said: ${msg}`;
++    }
+     return `Bad request from Antigravity. Next: retry once, then run /login antigravity if it keeps failing. Backend said: ${msg}`;
+   }
+   if (status === 401) {
+@@ -691,6 +694,7 @@ export function streamAntigravity(
+             if (response.ok) break;
+             lastText = await response.text();
+             if (response.status === 429 && /Individual quota reached/i.test(lastText)) break;
++            if (response.status === 400 && /location is not supported|FAILED_PRECONDITION/i.test(lastText)) break;
+             if (![403, 404, 429, 500, 502, 503, 504].includes(response.status)) break;
+           }
+ 

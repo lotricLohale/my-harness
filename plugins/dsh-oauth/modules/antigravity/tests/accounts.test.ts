@@ -122,7 +122,9 @@ test("首个可见 chunk 前遇到 quota 会切到下一个账号", async () => 
 		provider((_model, _context, init) => {
 			used.push(init.apiKey);
 			if (init.apiKey === "first")
-				throw Object.assign(new Error("Quota reached"), { status: 429 });
+				throw Object.assign(new Error("Individual quota reached"), {
+					status: 429,
+				});
 			return okEvents("second");
 		}),
 		fakeAuth,
