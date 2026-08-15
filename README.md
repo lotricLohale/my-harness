@@ -1,4 +1,4 @@
-# My Harness
+# MDSH
 
 Tauri v2 桌面外壳，原样运行 DeepSeek Harness，并通过仓库外的 Cordis bundle 接入 `pi-antigravity`。
 

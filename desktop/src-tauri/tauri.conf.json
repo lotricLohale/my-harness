@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "My Harness",
+  "productName": "MDSH",
   "version": "0.1.0",
   "identifier": "com.lotriclohale.my-harness",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "control",
-        "title": "My Harness",
+        "title": "MDSH",
         "width": 520,
         "height": 420,
         "resizable": false
