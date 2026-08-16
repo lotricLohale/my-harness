@@ -1,0 +1,39 @@
+{
+  "name": "dsh-claude-code",
+  "version": "0.1.0",
+  "description": "Claude Code agent preset for DeepSeek Harness: explore-first coding rules, dedicated tools over bash, and the standard tool topology.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json",
+    "./presets/*": "./presets/*"
+  },
+  "files": [
+    "index.mjs",
+    "sync.mjs",
+    "presets",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0 <5",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.3 <0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/dsh-system-prompt": { "optional": true }
+  }
+}

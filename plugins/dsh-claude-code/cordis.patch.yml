@@ -1,0 +1,5 @@
+# dsh-claude-code: host plugin syncs presets/claude-code into
+# ~/.dsh/.agent-presets so the picker can select「Claude Code」.
+- insert:
+    - id: claude-code
+      name: dsh-claude-code
