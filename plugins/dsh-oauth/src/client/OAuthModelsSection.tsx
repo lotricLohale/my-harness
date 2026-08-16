@@ -30,8 +30,9 @@ export function OAuthModelsSection() {
 									? "1px solid var(--accent-color, #1677ff)"
 									: "1px solid var(--border-color, #ddd)",
 								background: selected
-									? "var(--accent-bg, #e6f4ff)"
+									? "var(--accent-color, #1677ff)"
 									: "transparent",
+								color: selected ? "#fff" : "inherit",
 								cursor: "pointer",
 							}}
 						>

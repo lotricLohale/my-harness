@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=none
+- insert:
+    - id: ponytail
+      name: dsh-ponytail
+      config:
+        mode: full

@@ -6,6 +6,7 @@ Tauri v2 桌面外壳，原样运行 DeepSeek Harness，并通过仓库外的 Co
 
 - `core/`：`deepseek-ai/deepseek-harness` Git submodule，不在本仓库修改
 - `plugins/dsh-oauth/`：可单独发布的模块化 OAuth 插件；Antigravity 与 xAI 是其中两个授权模块
+- `plugins/dsh-ponytail/`：Ponytail 少写代码模式；`/ponytail` 切档，每轮注入规则
 - `web-ui/`：`zhu1090093659/dsh-web-ui` Git submodule，可独立检查和更新
 - `desktop/`：启动并托管 DSH Web 的 Tauri 应用
 

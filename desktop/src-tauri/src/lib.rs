@@ -1,5 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -25,9 +26,13 @@ struct HarnessProcess {
     port_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     update_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     ui_update_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
+    open_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
+    quit_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     tray: Mutex<Option<TrayIcon<tauri::Wry>>>,
     quitting: AtomicBool,
     activity_path: PathBuf,
+    usage_path: PathBuf,
+    last_usage: Mutex<String>,
     root: PathBuf,
 }
 
@@ -108,6 +113,7 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
         ])
         .current_dir(&core)
         .env("MDSH_STATUS_FILE", &state.activity_path)
+        .env("MDSH_USAGE_FILE", &state.usage_path)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -292,7 +298,7 @@ fn paint_area(rgba: &mut [u8], top: usize, left: usize, color: [u8; 4]) {
 
 #[cfg(test)]
 mod tests {
-    use super::h_icon_rgba;
+    use super::{h_icon_rgba, today_date, visible_usage_rows};
 
     #[test]
     fn status_icon_is_a_block_h() {
@@ -316,6 +322,77 @@ mod tests {
         assert_eq!(&error[center..center + 4], &[52, 199, 89, 255]);
         assert_eq!(&h_icon_rgba(true, false, Some(0))[..4], &[0, 200, 255, 255]);
     }
+
+    #[test]
+    fn today_usage_hides_zero_and_stale_dates() {
+        let today = today_date();
+        let raw = format!(
+r#"{{"date":"{today}","models":{{"flash":12,"empty":0,"grok":3}}}}"#
+        );
+        let rows = visible_usage_rows(&raw, &today);
+        assert_eq!(rows, vec![("flash".into(), 12), ("grok".into(), 3)]);
+        assert!(visible_usage_rows(&raw, "1999-01-01").is_empty());
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct StoredUsage {
+    date: Option<String>,
+    models: Option<BTreeMap<String, f64>>,
+}
+
+fn today_date() -> String {
+    Command::new("date")
+        .arg("+%Y-%m-%d")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| text.trim().to_string())
+        .filter(|text| text.len() == 10)
+        .unwrap_or_else(|| "1970-01-01".into())
+}
+
+fn usage_path() -> PathBuf {
+    dsh_home().join("token-usage.json")
+}
+
+fn dsh_home() -> PathBuf {
+    std::env::var_os("DSH_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".dsh")))
+        .unwrap_or_else(|| PathBuf::from(".dsh"))
+}
+
+fn visible_usage_rows(raw: &str, today: &str) -> Vec<(String, u64)> {
+    let Ok(parsed) = serde_json::from_str::<StoredUsage>(raw) else {
+        return Vec::new();
+    };
+    if parsed.date.as_deref() != Some(today) {
+        return Vec::new();
+    }
+    let mut rows: Vec<(String, u64)> = parsed
+        .models
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(name, value)| {
+let tokens = value.floor() as u64;
+(tokens > 0).then_some((name, tokens))
+        })
+        .collect();
+    rows.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    rows
+}
+
+fn format_tokens(tokens: u64) -> String {
+    let text = tokens.to_string();
+    let mut out = String::new();
+    for (index, ch) in text.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
 }
 
 fn create_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -345,6 +422,8 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     *state.port_menu.lock().expect("端口菜单锁已损坏") = Some(port);
     *state.update_menu.lock().expect("更新菜单锁已损坏") = Some(update);
     *state.ui_update_menu.lock().expect("UI 更新菜单锁已损坏") = Some(ui_update);
+    *state.open_menu.lock().expect("打开菜单锁已损坏") = Some(open);
+    *state.quit_menu.lock().expect("退出菜单锁已损坏") = Some(quit);
     let tray = TrayIconBuilder::new()
         .icon(Image::new_owned(h_icon_rgba(false, false, None), 48, 48))
         .icon_as_template(false)
@@ -369,6 +448,60 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+fn refresh_usage_menu(app: &AppHandle) {
+    let state = app.state::<HarnessProcess>();
+    let raw = std::fs::read_to_string(&state.usage_path).unwrap_or_default();
+    {
+let mut last = match state.last_usage.lock() {
+Ok(last) => last,
+Err(_) => return,
+};
+if *last == raw {
+return;
+}
+last.clone_from(&raw);
+    }
+    let Some(status) = state.status_menu.lock().ok().and_then(|item| item.clone()) else { return };
+    let Some(port) = state.port_menu.lock().ok().and_then(|item| item.clone()) else { return };
+    let Some(open) = state.open_menu.lock().ok().and_then(|item| item.clone()) else { return };
+    let Some(update) = state.update_menu.lock().ok().and_then(|item| item.clone()) else { return };
+    let Some(ui_update) = state.ui_update_menu.lock().ok().and_then(|item| item.clone()) else { return };
+    let Some(quit) = state.quit_menu.lock().ok().and_then(|item| item.clone()) else { return };
+    let Ok(after_status) = PredefinedMenuItem::separator(app) else { return };
+    let Ok(after_usage) = PredefinedMenuItem::separator(app) else { return };
+    let Ok(before_quit) = PredefinedMenuItem::separator(app) else { return };
+    let rows = visible_usage_rows(&raw, &today_date());
+    let mut extras = Vec::new();
+    if !rows.is_empty() {
+let Ok(header) = MenuItem::with_id(app, "usage-today", "今日 Token", false, None::<&str>) else { return };
+extras.push(header);
+for (index, (model, tokens)) in rows.into_iter().enumerate() {
+let Ok(item) = MenuItem::with_id(
+app,
+format!("usage-{index}"),
+format!("{model}  {}", format_tokens(tokens)),
+false,
+None::<&str>,
+) else { return };
+extras.push(item);
+}
+    }
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&status, &port, &after_status];
+    for extra in &extras {
+items.push(extra);
+    }
+    if !extras.is_empty() {
+items.push(&after_usage);
+    }
+    items.extend_from_slice(&[&open, &update, &ui_update, &before_quit, &quit]);
+    let Ok(menu) = Menu::with_items(app, &items) else { return };
+    if let Ok(tray) = state.tray.lock() {
+if let Some(tray) = tray.as_ref() {
+let _ = tray.set_menu(Some(menu));
+}
+    }
+}
+
 fn start_activity_animation(app: &AppHandle) {
     let handle = app.clone();
     thread::spawn(move || {
@@ -381,6 +514,7 @@ fn start_activity_animation(app: &AppHandle) {
                 let _ = std::fs::remove_file(&state.activity_path);
                 break;
             }
+            refresh_usage_menu(&handle);
             let core_ready = state.status.lock().is_ok_and(|status| status.as_str() == "ready");
             let activity = std::fs::read_to_string(&state.activity_path)
                 .unwrap_or_else(|_| "idle".into());
@@ -515,6 +649,7 @@ pub fn run() {
 
             let activity_path = std::env::temp_dir().join(format!("mdsh-model-{}.status", std::process::id()));
             let _ = std::fs::remove_file(&activity_path);
+            let usage_path = usage_path();
             app.manage(HarnessProcess {
                 child: Mutex::new(None),
                 status: Mutex::new("stopped".into()),
@@ -523,9 +658,13 @@ pub fn run() {
                 port_menu: Mutex::new(None),
                 update_menu: Mutex::new(None),
                 ui_update_menu: Mutex::new(None),
+                open_menu: Mutex::new(None),
+                quit_menu: Mutex::new(None),
                 tray: Mutex::new(None),
                 quitting: AtomicBool::new(false),
                 activity_path,
+                usage_path,
+                last_usage: Mutex::new(String::new()),
                 root: project_root(),
             });
             create_tray(app.handle())?;

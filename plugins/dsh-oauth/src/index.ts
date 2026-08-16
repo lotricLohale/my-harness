@@ -11,6 +11,7 @@ import type {} from "@deepseek-ai/dsh-llm";
 import { Config as AntigravityConfig } from "../modules/antigravity/src/index.js";
 import { Config as XaiConfig } from "../modules/xai/src/index.js";
 import { enabledModules, OAUTH_MODULE_IDS } from "./modules.js";
+import { registerTodayUsage } from "./usage-today.js";
 
 export const name = "llm-oauth";
 export const inject = ["llm", "credentials", "commands", "settings"];
@@ -32,6 +33,7 @@ export function apply(ctx: Context, config: Config): void {
 	for (const module of enabledModules(resolved.modules)) {
 		module.apply(ctx, module.configOf(resolved));
 	}
+	registerTodayUsage(ctx);
 }
 
 export { enabledModules, OAUTH_MODULE_IDS, OAUTH_MODULES } from "./modules.js";

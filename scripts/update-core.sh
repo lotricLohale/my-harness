@@ -23,5 +23,7 @@ node "$core/packages/subprocess/subprocess-local/scripts/ensure-spawn-helper.mjs
 )
 pnpm --dir "$root/plugins/dsh-oauth" build
 pnpm --dir "$root/plugins/dsh-oauth" test
+pnpm --dir "$root/plugins/dsh-ponytail" build
+pnpm --dir "$root/plugins/dsh-ponytail" test
 
 echo 'DeepSeek Harness 已更新；父仓库中的 core 子模块指针由你决定何时提交。'

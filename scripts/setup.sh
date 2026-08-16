@@ -3,7 +3,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 core="$root/core"
-plugin="$root/plugins/dsh-oauth"
+oauth="$root/plugins/dsh-oauth"
+ponytail="$root/plugins/dsh-ponytail"
 desktop="$root/desktop"
 
 # core 是只读 submodule；跳过其仓库级 Git hook 安装脚本。
@@ -17,11 +18,14 @@ node "$core/packages/subprocess/subprocess-local/scripts/ensure-spawn-helper.mjs
 	./node_modules/.bin/tsdown --env.DSH_BUILD_FACE client
 	(cd apps/web && ./node_modules/.bin/vite build)
 )
-CI=true pnpm --dir "$plugin" install --frozen-lockfile
-pnpm --dir "$plugin" build
+CI=true pnpm --dir "$oauth" install --frozen-lockfile
+pnpm --dir "$oauth" build
+CI=true pnpm --dir "$ponytail" install --frozen-lockfile
+pnpm --dir "$ponytail" build
 CI=true pnpm --dir "$desktop" install --frozen-lockfile
 
-bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$plugin"
+bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$oauth"
+bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$ponytail"
 bash "$root/scripts/setup-ui.sh"
 
 echo '初始化完成。运行 pnpm dev 启动 Tauri。'
