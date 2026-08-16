@@ -25,7 +25,6 @@ struct HarnessProcess {
     status_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     port_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     update_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
-    ui_update_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     open_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     quit_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     tray: Mutex<Option<TrayIcon<tauri::Wry>>>,
@@ -298,7 +297,7 @@ fn paint_area(rgba: &mut [u8], top: usize, left: usize, color: [u8; 4]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{h_icon_rgba, today_date, visible_usage_rows};
+    use super::{h_icon_rgba, summarize_updates, today_date, visible_usage_rows, UpdateStatus};
 
     #[test]
     fn status_icon_is_a_block_h() {
@@ -332,6 +331,30 @@ r#"{{"date":"{today}","models":{{"flash":12,"empty":0,"grok":3}}}}"#
         let rows = visible_usage_rows(&raw, &today);
         assert_eq!(rows, vec![("flash".into(), 12), ("grok".into(), 3)]);
         assert!(visible_usage_rows(&raw, "1999-01-01").is_empty());
+    }
+
+    fn status(update_available: bool) -> UpdateStatus {
+        UpdateStatus {
+current: "a".into(),
+latest: "b".into(),
+update_available,
+        }
+    }
+
+    #[test]
+    fn combined_update_label_covers_both_repos() {
+        assert_eq!(
+summarize_updates(Ok(status(true)), Ok(status(true))),
+"发现核心和 UI 更新",
+        );
+        assert_eq!(
+summarize_updates(Ok(status(false)), Ok(status(false))),
+"已是最新",
+        );
+        assert_eq!(
+summarize_updates(Err("x".into()), Ok(status(true))),
+"发现 UI 库更新（核心检查失败）",
+        );
     }
 }
 
@@ -400,8 +423,7 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let port = MenuItem::with_id(app, "port", "端口：--", false, None::<&str>)?;
     let status_separator = PredefinedMenuItem::separator(app)?;
     let open = MenuItem::with_id(app, "open", "打开 Harness", true, None::<&str>)?;
-    let update = MenuItem::with_id(app, "update", "检查核心更新", true, None::<&str>)?;
-    let ui_update = MenuItem::with_id(app, "ui-update", "检查 UI 库更新", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
     let action_separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "退出 MDSH", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -412,7 +434,6 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             &status_separator,
             &open,
             &update,
-            &ui_update,
             &action_separator,
             &quit,
         ],
@@ -421,7 +442,6 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     *state.status_menu.lock().expect("状态菜单锁已损坏") = Some(status);
     *state.port_menu.lock().expect("端口菜单锁已损坏") = Some(port);
     *state.update_menu.lock().expect("更新菜单锁已损坏") = Some(update);
-    *state.ui_update_menu.lock().expect("UI 更新菜单锁已损坏") = Some(ui_update);
     *state.open_menu.lock().expect("打开菜单锁已损坏") = Some(open);
     *state.quit_menu.lock().expect("退出菜单锁已损坏") = Some(quit);
     let tray = TrayIconBuilder::new()
@@ -435,8 +455,7 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                     eprintln!("打开 Harness 失败：{error}");
                 }
             }
-            "update" => check_core_update_from_tray(app),
-            "ui-update" => check_ui_update_from_tray(app),
+            "update" => check_updates_from_tray(app),
             "quit" => {
                 app.state::<HarnessProcess>().quitting.store(true, Ordering::Relaxed);
                 app.exit(0);
@@ -465,7 +484,6 @@ last.clone_from(&raw);
     let Some(port) = state.port_menu.lock().ok().and_then(|item| item.clone()) else { return };
     let Some(open) = state.open_menu.lock().ok().and_then(|item| item.clone()) else { return };
     let Some(update) = state.update_menu.lock().ok().and_then(|item| item.clone()) else { return };
-    let Some(ui_update) = state.ui_update_menu.lock().ok().and_then(|item| item.clone()) else { return };
     let Some(quit) = state.quit_menu.lock().ok().and_then(|item| item.clone()) else { return };
     let Ok(after_status) = PredefinedMenuItem::separator(app) else { return };
     let Ok(after_usage) = PredefinedMenuItem::separator(app) else { return };
@@ -493,7 +511,7 @@ items.push(extra);
     if !extras.is_empty() {
 items.push(&after_usage);
     }
-    items.extend_from_slice(&[&open, &update, &ui_update, &before_quit, &quit]);
+    items.extend_from_slice(&[&open, &update, &before_quit, &quit]);
     let Ok(menu) = Menu::with_items(app, &items) else { return };
     if let Ok(tray) = state.tray.lock() {
 if let Some(tray) = tray.as_ref() {
@@ -569,46 +587,37 @@ fn repository_update_status(repository: &PathBuf, branch: &str) -> Result<Update
     })
 }
 
-fn start_update_check(
-    menu: Option<MenuItem<tauri::Wry>>,
-    repository: PathBuf,
-    branch: &'static str,
-    labels: [&'static str; 4],
-) {
-    let Some(menu) = menu else { return };
-    let _ = menu.set_text(labels[0]);
+fn summarize_updates(core: Result<UpdateStatus, String>, ui: Result<UpdateStatus, String>) -> String {
+    match (core, ui) {
+        (Ok(core), Ok(ui)) => match (core.update_available, ui.update_available) {
+            (true, true) => "发现核心和 UI 更新".into(),
+            (true, false) => "发现核心更新".into(),
+            (false, true) => "发现 UI 库更新".into(),
+            (false, false) => "已是最新".into(),
+        },
+        (Err(_), Err(_)) => "更新检查失败".into(),
+        (Err(_), Ok(ui)) if ui.update_available => "发现 UI 库更新（核心检查失败）".into(),
+        (Ok(core), Err(_)) if core.update_available => "发现核心更新（UI 检查失败）".into(),
+        (Err(_), Ok(_)) => "核心更新检查失败".into(),
+        (Ok(_), Err(_)) => "UI 库更新检查失败".into(),
+    }
+}
+
+fn check_updates_from_tray(app: &AppHandle) {
+    let state = app.state::<HarnessProcess>();
+    let Some(menu) = state.update_menu.lock().ok().and_then(|menu| menu.clone()) else { return };
+    let core = state.root.join("core");
+    let ui = state.root.join("web-ui");
+    let _ = menu.set_text("正在检查更新…");
     let _ = menu.set_enabled(false);
     thread::spawn(move || {
-        let label = match repository_update_status(&repository, branch) {
-            Ok(status) if status.update_available => labels[1],
-            Ok(_) => labels[2],
-            Err(_) => labels[3],
-        };
+        let label = summarize_updates(
+            repository_update_status(&core, "master"),
+            repository_update_status(&ui, "main"),
+        );
         let _ = menu.set_text(label);
         let _ = menu.set_enabled(true);
     });
-}
-
-fn check_core_update_from_tray(app: &AppHandle) {
-    let state = app.state::<HarnessProcess>();
-    let menu = state.update_menu.lock().ok().and_then(|menu| menu.clone());
-    start_update_check(
-        menu,
-        state.root.join("core"),
-        "master",
-        ["正在检查核心更新…", "发现核心更新", "核心已是最新", "核心更新检查失败"],
-    );
-}
-
-fn check_ui_update_from_tray(app: &AppHandle) {
-    let state = app.state::<HarnessProcess>();
-    let menu = state.ui_update_menu.lock().ok().and_then(|menu| menu.clone());
-    start_update_check(
-        menu,
-        state.root.join("web-ui"),
-        "main",
-        ["正在检查 UI 库更新…", "发现 UI 库更新", "UI 库已是最新", "UI 库更新检查失败"],
-    );
 }
 
 #[tauri::command]
@@ -657,7 +666,6 @@ pub fn run() {
                 status_menu: Mutex::new(None),
                 port_menu: Mutex::new(None),
                 update_menu: Mutex::new(None),
-                ui_update_menu: Mutex::new(None),
                 open_menu: Mutex::new(None),
                 quit_menu: Mutex::new(None),
                 tray: Mutex::new(None),

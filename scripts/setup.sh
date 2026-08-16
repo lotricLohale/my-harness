@@ -26,6 +26,7 @@ CI=true pnpm --dir "$desktop" install --frozen-lockfile
 
 bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$oauth"
 bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$ponytail"
+bash "$root/scripts/dsh-plugin.sh" --profile web add dshmarket
 bash "$root/scripts/setup-ui.sh"
 
 echo '初始化完成。运行 pnpm dev 启动 Tauri。'
