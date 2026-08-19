@@ -14,6 +14,7 @@ CI=true pnpm --dir "$ui" install --frozen-lockfile
 pnpm --dir "$ui" build
 node "$ui/scripts/link-profile.mjs"
 bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$ui/packages/dsh-web-ui-all"
+CI=true corepack pnpm@11.7.0 --dir "$dsh_home/profiles/web" add "dsh-better-sidebar@0.13.0" --save-exact --allow-build=node-pty --allow-build=protobufjs
 
 if [[ "$(node "$ui/scripts/dsh-skin" current)" == "none" ]]; then
   node "$ui/scripts/dsh-skin" use whale-song

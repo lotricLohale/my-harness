@@ -6,7 +6,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -25,6 +25,7 @@ struct HarnessProcess {
     status_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     port_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     update_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
+    pending_updates: AtomicU8,
     open_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     quit_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     tray: Mutex<Option<TrayIcon<tauri::Wry>>>,
@@ -142,6 +143,14 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
         };
         let state = handle.state::<HarnessProcess>();
         set_harness_status(&state, if ready { "ready" } else { "failed" });
+            if ready {
+                let url = state.url.lock().ok().and_then(|url| url.clone());
+                if let (Some(window), Some(url)) = (handle.get_webview_window("harness"), url) {
+                    if let Ok(url) = url.parse() {
+                        let _ = window.navigate(url);
+                    }
+                }
+            }
     });
     Ok(())
 }
@@ -297,7 +306,7 @@ fn paint_area(rgba: &mut [u8], top: usize, left: usize, color: [u8; 4]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{h_icon_rgba, summarize_updates, today_date, visible_usage_rows, UpdateStatus};
+    use super::{available_updates, h_icon_rgba, summarize_updates, today_date, visible_usage_rows, UpdateStatus};
 
     #[test]
     fn status_icon_is_a_block_h() {
@@ -355,6 +364,8 @@ summarize_updates(Ok(status(false)), Ok(status(false))),
 summarize_updates(Err("x".into()), Ok(status(true))),
 "发现 UI 库更新（核心检查失败）",
         );
+        assert_eq!(available_updates(&Ok(status(true)), &Ok(status(false))), 1);
+        assert_eq!(available_updates(&Ok(status(true)), &Ok(status(true))), 3);
     }
 }
 
@@ -455,7 +466,7 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                     eprintln!("打开 Harness 失败：{error}");
                 }
             }
-            "update" => check_updates_from_tray(app),
+            "update" => handle_updates_from_tray(app),
             "quit" => {
                 app.state::<HarnessProcess>().quitting.store(true, Ordering::Relaxed);
                 app.exit(0);
@@ -603,19 +614,79 @@ fn summarize_updates(core: Result<UpdateStatus, String>, ui: Result<UpdateStatus
     }
 }
 
+fn available_updates(core: &Result<UpdateStatus, String>, ui: &Result<UpdateStatus, String>) -> u8 {
+    u8::from(matches!(core, Ok(status) if status.update_available))
+        | (u8::from(matches!(ui, Ok(status) if status.update_available)) << 1)
+}
+
 fn check_updates_from_tray(app: &AppHandle) {
     let state = app.state::<HarnessProcess>();
     let Some(menu) = state.update_menu.lock().ok().and_then(|menu| menu.clone()) else { return };
     let core = state.root.join("core");
     let ui = state.root.join("web-ui");
+    let handle = app.clone();
     let _ = menu.set_text("正在检查更新…");
     let _ = menu.set_enabled(false);
     thread::spawn(move || {
-        let label = summarize_updates(
-            repository_update_status(&core, "master"),
-            repository_update_status(&ui, "main"),
-        );
+        let core_status = repository_update_status(&core, "master");
+        let ui_status = repository_update_status(&ui, "main");
+        let updates = available_updates(&core_status, &ui_status);
+        handle.state::<HarnessProcess>().pending_updates.store(updates, Ordering::Relaxed);
+        let mut label = summarize_updates(core_status, ui_status);
+        if updates != 0 {
+            label.push_str("（再次点击更新）");
+        }
         let _ = menu.set_text(label);
+        let _ = menu.set_enabled(true);
+    });
+}
+
+fn run_update_script(root: &PathBuf, script: &str) -> Result<(), String> {
+    let status = Command::new("bash")
+        .arg(root.join("scripts").join(script))
+        .current_dir(root)
+        .status()
+        .map_err(|error| format!("无法运行 {script}：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{script} 执行失败：{status}"))
+    }
+}
+
+fn handle_updates_from_tray(app: &AppHandle) {
+    let state = app.state::<HarnessProcess>();
+    let updates = state.pending_updates.swap(0, Ordering::Relaxed);
+    if updates == 0 {
+        check_updates_from_tray(app);
+        return;
+    }
+    let Some(menu) = state.update_menu.lock().ok().and_then(|menu| menu.clone()) else { return };
+    let root = state.root.clone();
+    let handle = app.clone();
+    let _ = menu.set_text("正在更新…");
+    let _ = menu.set_enabled(false);
+    thread::spawn(move || {
+        let result = (|| {
+            if updates & 1 != 0 {
+                run_update_script(&root, "update-core.sh")?;
+            }
+            if updates & 2 != 0 {
+                run_update_script(&root, "update-ui.sh")?;
+            }
+            stop_harness(&handle.state::<HarnessProcess>());
+            start_harness(&handle)
+        })();
+        match result {
+            Ok(()) => {
+                let _ = menu.set_text("更新完成");
+            }
+            Err(error) => {
+                eprintln!("更新失败：{error}");
+                handle.state::<HarnessProcess>().pending_updates.store(updates, Ordering::Relaxed);
+                let _ = menu.set_text("更新失败（再次点击重试）");
+            }
+        }
         let _ = menu.set_enabled(true);
     });
 }
@@ -666,6 +737,7 @@ pub fn run() {
                 status_menu: Mutex::new(None),
                 port_menu: Mutex::new(None),
                 update_menu: Mutex::new(None),
+                pending_updates: AtomicU8::new(0),
                 open_menu: Mutex::new(None),
                 quit_menu: Mutex::new(None),
                 tray: Mutex::new(None),

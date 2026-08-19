@@ -21,8 +21,10 @@ node "$core/packages/subprocess/subprocess-local/scripts/ensure-spawn-helper.mjs
 	./node_modules/.bin/tsdown --env.DSH_BUILD_FACE client
 	(cd apps/web && ./node_modules/.bin/vite build)
 )
+CI=true pnpm --dir "$root/plugins/dsh-oauth" install --frozen-lockfile
 pnpm --dir "$root/plugins/dsh-oauth" build
 pnpm --dir "$root/plugins/dsh-oauth" test
+CI=true pnpm --dir "$root/plugins/dsh-ponytail" install --frozen-lockfile
 pnpm --dir "$root/plugins/dsh-ponytail" build
 pnpm --dir "$root/plugins/dsh-ponytail" test
 

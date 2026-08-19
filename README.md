@@ -64,7 +64,7 @@ pnpm ui:check
 pnpm ui:update
 ```
 
-状态栏“检查更新”会同时查看 `core/` 和 `web-ui/`；检查不会自动改变子模块指针。Web profile 默认安装 [dshmarket](https://dshmarket.com/)。
+状态栏“检查更新”会同时查看 `core/` 和 `web-ui/`；发现更新后再次点击即可更新、重建并重启 Harness。Web profile 默认安装 [dshmarket](https://dshmarket.com/)。
 
 ## 当前边界
 
