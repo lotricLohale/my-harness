@@ -1,0 +1,36 @@
+diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
+index 62d7d7e..b756937 100644
+--- a/src/auth/oauth.ts
++++ b/src/auth/oauth.ts
+@@ -148,7 +148,7 @@ function startCallbackServer(expectedState: string): Promise<CallbackServer> {
+       }
+ 
+       res.writeHead(200, oauthCallbackHeaders());
+-      res.end("Antigravity authentication complete. You can close this window and return to Pi.");
++      res.end("Antigravity authentication complete. You can close this window and return to DSH.");
+       finish(() => resolveCode({ code, state }));
+     });
+ 
+@@ -339,7 +339,7 @@ export async function loginAntigravity(
+     callbacks.onAuth({
+       url: `${AUTH_URL}?${authParams.toString()}`,
+       instructions:
+-        "Complete Google sign-in. Pi captures the local callback automatically — or, on a remote/headless machine, paste the callback URL when prompted.",
++        "Complete Google sign-in. DSH captures the local callback automatically — or, on a remote/headless machine, paste the callback URL when prompted.",
+     });
+ 
+     const { code, state: returnedState } = await acquireAuthCode(state, {
+diff --git a/src/stream/stream.ts b/src/stream/stream.ts
+index dba83d9..c6c7416 100644
+--- a/src/stream/stream.ts
++++ b/src/stream/stream.ts
+@@ -794,6 +794,9 @@ export function friendlyAntigravityError(status: number | undefined, text: strin
+     if (/Request contains an invalid argument/i.test(msg)) {
+       return `Antigravity rejected this request (${msg}). Next: retry once; if it keeps failing, switch models or re-login.`;
+     }
++    if (/location is not supported|FAILED_PRECONDITION/i.test(msg)) {
++      return `Antigravity blocked this request because the current account or network location is not supported. Next: switch network/VPN, or use another Google account whose region is allowed. Do not re-login expecting a different result. Backend said: ${msg}`;
++    }
+     return `Bad request from Antigravity. Next: retry once, then run /login antigravity if it keeps failing. Backend said: ${msg}`;
+   }
+   if (status === 401) {

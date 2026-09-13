@@ -54,8 +54,7 @@ export function accountCandidates(
 				account.enabled !== false && (account.exhaustedUntil ?? 0) <= now,
 		)
 		.sort(
-			(a, b) =>
-				(b.priority ?? 0) - (a.priority ?? 0) || a.id.localeCompare(b.id),
+			(a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.id.localeCompare(b.id),
 		);
 }
 
@@ -105,7 +104,9 @@ export class AntigravityAuth {
 	private loginTask: Promise<void> | undefined;
 	private fallbackAccounts: AntigravityAccountMeta[] = [];
 	private lastAccountId: string | undefined;
-	private writeConfig: ((patch: object) => Promise<void>) | undefined;
+	private writeConfig:
+		| ((patch: Record<string, unknown>) => Promise<void>)
+		| undefined;
 
 	constructor(
 		private readonly ctx: Context,
@@ -116,7 +117,9 @@ export class AntigravityAuth {
 	}
 
 	/** 接入 settings 后允许登录和冷却回写非秘密账号元数据。 */
-	setConfigWriter(writeConfig: (patch: object) => Promise<void>): void {
+	setConfigWriter(
+		writeConfig: (patch: Record<string, unknown>) => Promise<void>,
+	): void {
 		this.writeConfig = writeConfig;
 	}
 
@@ -192,12 +195,9 @@ export class AntigravityAuth {
 				prompt.resolve(value);
 			},
 			onDeviceCode: () => {},
-			onPrompt: () =>
-				Promise.reject(
-					new Error(
-						"Antigravity login requested unsupported interactive input",
-					),
-				),
+			// pi-antigravity races onPrompt against the local callback server.
+			// A rejecting prompt wins that race and closes localhost:51121.
+			onPrompt: () => new Promise<string>(() => {}),
 			onSelect: () => Promise.resolve(undefined),
 		};
 		const completion = this.oauth
@@ -238,17 +238,13 @@ export class AntigravityAuth {
 					const hit = await this.ctx.credentials.resolve(ref);
 					if (hit !== undefined) {
 						try {
-							expires = new Date(
-								parseCredentials(hit.value).expires,
-							).toISOString();
+							expires = new Date(parseCredentials(hit.value).expires).toISOString();
 							if (includeQuota)
 								quota = serializeQuotaGroups(
-									(await fetchUpstreamUsage(await this.apiKeyFor(account)))
-										.groups,
+									(await fetchUpstreamUsage(await this.apiKeyFor(account))).groups,
 								);
 						} catch (error) {
-							quotaError =
-								error instanceof Error ? error.message : String(error);
+							quotaError = error instanceof Error ? error.message : String(error);
 						}
 					}
 				}
@@ -299,9 +295,7 @@ export class AntigravityAuth {
 				const hit = await this.ctx.credentials.resolve(ref);
 				if (hit !== undefined) {
 					try {
-						expires = new Date(
-							parseCredentials(hit.value).expires,
-						).toISOString();
+						expires = new Date(parseCredentials(hit.value).expires).toISOString();
 					} catch {
 						expires = "invalid";
 					}

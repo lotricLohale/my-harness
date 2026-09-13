@@ -46,7 +46,7 @@ export interface AntigravityUsageSummary {
 }
 
 /**
- * 读取上游账号额度；pi-antigravity 未公开 package export，只能集中使用固定 0.2.9 的 src 子路径。
+ * 读取上游账号额度；pi-antigravity 未公开 package export，只能集中使用固定 0.7.1 的 src 子路径。
  */
 export async function fetchUpstreamUsage(apiKey: string): Promise<AntigravityUsageSummary> {
   const usage = await fetchAccountUsage(apiKey)
@@ -60,6 +60,7 @@ export function loadUpstreamProvider(): AntigravityProvider {
       if (id === 'antigravity') provider = value
     },
     registerCommand(): void {},
+    registerTool(): void {},
   })
   if (provider === undefined) throw new Error('pi-antigravity did not register the antigravity provider')
   return provider

@@ -53,8 +53,7 @@ export function accountCandidates(
 				account.enabled !== false && (account.exhaustedUntil ?? 0) <= now,
 		)
 		.sort(
-			(a, b) =>
-				(b.priority ?? 0) - (a.priority ?? 0) || a.id.localeCompare(b.id),
+			(a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.id.localeCompare(b.id),
 		);
 }
 
@@ -115,7 +114,9 @@ export class XaiAuth {
 	private loginTask: Promise<void> | undefined;
 	private fallbackAccounts: XaiAccountMeta[] = [];
 	private lastAccountId: string | undefined;
-	private writeConfig: ((patch: object) => Promise<void>) | undefined;
+	private writeConfig:
+		| ((patch: Record<string, unknown>) => Promise<void>)
+		| undefined;
 
 	constructor(
 		private readonly ctx: Context,
@@ -126,7 +127,9 @@ export class XaiAuth {
 	}
 
 	/** 接入 settings 后允许登录和冷却回写非秘密账号元数据。 */
-	setConfigWriter(writeConfig: (patch: object) => Promise<void>): void {
+	setConfigWriter(
+		writeConfig: (patch: Record<string, unknown>) => Promise<void>,
+	): void {
 		this.writeConfig = writeConfig;
 	}
 
@@ -242,26 +245,21 @@ export class XaiAuth {
 					const hit = await this.ctx.credentials.resolve(ref);
 					if (hit !== undefined) {
 						try {
-							expires = new Date(
-								parseCredentials(hit.value).expires,
-							).toISOString();
+							expires = new Date(parseCredentials(hit.value).expires).toISOString();
 							if (includeQuota) {
 								const apiKey = await this.apiKeyFor(account);
 								const usage = await fetchAccountUsage(apiKey);
 								quota = serializeQuotaGroups(usage);
 							}
 						} catch (error) {
-							quotaError =
-								error instanceof Error ? error.message : String(error);
+							quotaError = error instanceof Error ? error.message : String(error);
 						}
 					}
 				}
 				return {
 					id: account.id,
 					...(account.email === undefined ? {} : { email: account.email }),
-					...(account.username === undefined
-						? {}
-						: { username: account.username }),
+					...(account.username === undefined ? {} : { username: account.username }),
 					enabled: account.enabled !== false,
 					priority: account.priority ?? 0,
 					configured: info.configured,
@@ -306,9 +304,7 @@ export class XaiAuth {
 				const hit = await this.ctx.credentials.resolve(ref);
 				if (hit !== undefined) {
 					try {
-						expires = new Date(
-							parseCredentials(hit.value).expires,
-						).toISOString();
+						expires = new Date(parseCredentials(hit.value).expires).toISOString();
 					} catch {
 						expires = "invalid";
 					}
@@ -347,16 +343,13 @@ export class XaiAuth {
 			matchKey === undefined
 				? undefined
 				: accounts.find(
-						(account) =>
-							account.email === matchKey || account.username === matchKey,
+						(account) => account.email === matchKey || account.username === matchKey,
 					);
 		const id = existing?.id ?? safeId(matchKey ?? `account_${Date.now()}`);
 		const nextAccount: XaiAccountMeta = {
 			id,
 			...(identity.email === undefined ? {} : { email: identity.email }),
-			...(identity.username === undefined
-				? {}
-				: { username: identity.username }),
+			...(identity.username === undefined ? {} : { username: identity.username }),
 			credentialRef: existing?.credentialRef ?? uniqueRef(id),
 			enabled: existing?.enabled ?? true,
 			priority: existing?.priority ?? 0,
@@ -404,9 +397,7 @@ export class XaiAuth {
 			{
 				id,
 				...(identity.email === undefined ? {} : { email: identity.email }),
-				...(identity.username === undefined
-					? {}
-					: { username: identity.username }),
+				...(identity.username === undefined ? {} : { username: identity.username }),
 				credentialRef: this.legacyRef,
 				enabled: true,
 				priority: 0,

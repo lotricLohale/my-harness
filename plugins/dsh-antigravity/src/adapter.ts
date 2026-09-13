@@ -1,5 +1,6 @@
 import {
 	attributionHeaders,
+	contentHasImage,
 	LlmAdapter,
 	LlmError,
 	ReasoningEffortId,
@@ -10,12 +11,24 @@ import type {
 	LlmResolvedModelInfo,
 	StreamChunk,
 } from "@deepseek-ai/dsh-llm";
+import type {
+	AttachmentStore,
+	ImageAttachmentRef,
+} from "@deepseek-ai/dsh-attachment";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, Context as PiContext, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AntigravityAccountMeta, AntigravityAuth } from "./auth.js";
 import { toPiContext } from "./context.js";
 import { toStreamChunks } from "./stream.js";
 import type { AntigravityProvider } from "./upstream.js";
+
+export interface AntigravityAdapterOptions {
+	resolveAttachments?: () => AttachmentStore | undefined;
+	resolveImageAccess?: (
+		attachments: AttachmentStore,
+		ref: ImageAttachmentRef,
+	) => { readonlyPath: string } | undefined;
+}
 
 function isModelVisible(chunk: StreamChunk): boolean {
 	return chunk.type !== "usage" && chunk.type !== "finish";
@@ -40,6 +53,7 @@ export class AntigravityAdapter extends LlmAdapter {
 	constructor(
 		private readonly provider: AntigravityProvider,
 		private readonly auth: AntigravityAuth,
+		private readonly options?: AntigravityAdapterOptions,
 	) {
 		super();
 	}
@@ -109,6 +123,32 @@ export class AntigravityAdapter extends LlmAdapter {
 				"MISSING_CREDENTIAL",
 			);
 		}
+		const model = this.model(options.model);
+		const containsImage = options.messages.some((message) =>
+			contentHasImage(message.content),
+		);
+		if (containsImage && !model.input.includes("image")) {
+			throw new LlmError(
+				`Antigravity model "${model.id}" does not support image input`,
+				"UNSUPPORTED_CONTENT",
+			);
+		}
+		const attachments = containsImage
+			? this.options?.resolveAttachments?.()
+			: undefined;
+		if (containsImage && !attachments) {
+			throw new LlmError(
+				"Antigravity image input requires the durable attachment service",
+				"UNSUPPORTED_CONTENT",
+			);
+		}
+		const imageContext = attachments
+			? {
+					attachments,
+					resolveImageAccess: this.options?.resolveImageAccess,
+				}
+			: undefined;
+		const context = await toPiContext(options, imageContext);
 		let lastQuota: unknown;
 		for (let index = 0; index < accounts.length; index += 1) {
 			const account = accounts[index]!;
@@ -116,7 +156,11 @@ export class AntigravityAdapter extends LlmAdapter {
 			let switched = false;
 			const pending: StreamChunk[] = [];
 			try {
-				for await (const chunk of this.streamWithAccount(options, account)) {
+				for await (const chunk of this.streamWithAccount(
+					options,
+					account,
+					context,
+				)) {
 					if (!yieldedVisible) {
 						if (
 							chunk.type === "finish" &&
@@ -163,6 +207,7 @@ export class AntigravityAdapter extends LlmAdapter {
 	private async *streamWithAccount(
 		options: GenerateOptions,
 		account: AntigravityAccountMeta,
+		context: PiContext,
 	): AsyncIterable<StreamChunk> {
 		const streamSimple = this.provider.streamSimple;
 		if (streamSimple === undefined)
@@ -173,7 +218,7 @@ export class AntigravityAdapter extends LlmAdapter {
 		const model = this.model(options.model);
 		const apiKey = await this.auth.apiKeyFor(account);
 		const reasoning = this.reasoning(model, options.reasoningEffort);
-		const events = streamSimple(model, toPiContext(options), {
+		const events = streamSimple(model, context, {
 			apiKey,
 			...(reasoning === undefined || reasoning === "off" ? {} : { reasoning }),
 			...(options.temperature === undefined

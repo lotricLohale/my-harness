@@ -10,3 +10,4 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 # Local Pi runtime state
 .atl/
+.pnpm-store/

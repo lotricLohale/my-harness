@@ -1,5 +1,6 @@
-import { CallId, EMPTY_RESPONSE_CODE, LlmError } from "@deepseek-ai/dsh-llm";
+import { EMPTY_RESPONSE_CODE, LlmError } from "@deepseek-ai/dsh-llm";
 import type {
+	CallId,
 	FinishReason,
 	StreamChunk,
 	TokenUsage,
@@ -10,6 +11,9 @@ import type {
 	Usage,
 } from "@earendil-works/pi-ai";
 import { toReplayState } from "./replay.js";
+
+// SAFETY: CallId is a nominal string brand erased at runtime.
+const asCallId = (id: string): CallId => id as unknown as CallId;
 
 /** 将 pi-ai 累计用量转换成 Harness 用量字段。 */
 export function mapUsage(usage: Usage): TokenUsage {
@@ -136,7 +140,7 @@ export async function* toStreamChunks(
 				yield {
 					type: "tool-call-delta",
 					index: event.contentIndex,
-					id: CallId(call?.id ?? ""),
+					id: asCallId(call?.id ?? ""),
 					...(call?.name ? { name: call.name } : {}),
 					argumentsDelta: event.delta,
 				};
@@ -148,7 +152,7 @@ export async function* toStreamChunks(
 					index: event.contentIndex,
 					block: {
 						type: "tool-call",
-						id: CallId(event.toolCall.id),
+						id: asCallId(event.toolCall.id),
 						name: event.toolCall.name,
 						arguments: JSON.stringify(event.toolCall.arguments),
 					},

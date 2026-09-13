@@ -6,7 +6,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import type {} from "@deepseek-ai/dsh-commands";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
+import type {} from "@deepseek-ai/dsh-settings";
 import type {} from "@deepseek-ai/dsh-skill";
 import type {} from "@deepseek-ai/dsh-system-prompt";
 import { getPonytailInstructions } from "./instructions.js";
@@ -21,7 +21,7 @@ import { registerSkills } from "./skills.js";
 export const name = "ponytail";
 export const inject = ["systemPrompt", "commands", "settings", "skills"];
 
-const NS = settingsNamespace("ponytail");
+const NS = "ponytail";
 
 export interface Config {
 	mode?: PonytailMode;

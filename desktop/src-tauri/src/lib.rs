@@ -79,19 +79,17 @@ fn set_harness_status(state: &HarnessProcess, status: &str) {
         value if value.starts_with("exited") => "已退出",
         _ => "已停止",
     };
-    if let Ok(menu) = state.status_menu.lock() {
-        if let Some(menu) = menu.as_ref() {
+    if let Ok(menu) = state.status_menu.lock()
+        && let Some(menu) = menu.as_ref() {
             let _ = menu.set_text(format!("状态：{label}"));
         }
-    }
-    if let Ok(tray) = state.tray.lock() {
-        if let Some(tray) = tray.as_ref() {
+    if let Ok(tray) = state.tray.lock()
+        && let Some(tray) = tray.as_ref() {
             let _ = tray.set_icon_with_as_template(
                 Some(Image::new_owned(h_icon_rgba(status == "ready", false, None), 48, 48)),
                 false,
             );
         }
-    }
 }
 
 fn start_harness(app: &AppHandle) -> Result<(), String> {
@@ -102,7 +100,7 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
     }
     let port = free_port()?;
     let url = format!("http://127.0.0.1:{port}");
-    let child = Command::new("node")
+    let mut child = Command::new("node")
         .args([
             "--import",
             "tsx/esm",
@@ -110,25 +108,45 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
             "web",
             "--port",
             &port.to_string(),
+            "--no-open",
         ])
         .current_dir(&core)
         .env("MDSH_STATUS_FILE", &state.activity_path)
         .env("MDSH_USAGE_FILE", &state.usage_path)
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|error| format!("无法启动 DeepSeek Harness：{error}"))?;
+    let stdout = child.stdout.take();
     *state.child.lock().map_err(|_| "子进程锁已损坏")? = Some(child);
     *state.url.lock().map_err(|_| "URL 锁已损坏")? = Some(url.clone());
     set_harness_status(&state, "starting");
-    if let Ok(menu) = state.port_menu.lock() {
-        if let Some(menu) = menu.as_ref() {
+    if let Ok(menu) = state.port_menu.lock()
+        && let Some(menu) = menu.as_ref() {
             let _ = menu.set_text(format!("端口：{port}"));
         }
-    }
 
     let handle = app.clone();
+    if let Some(stdout) = stdout {
+        let handle_for_stdout = app.clone();
+        thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                println!("{line}");
+                if let Some(pos) = line.find("dsh web: ") {
+                    let part = &line[pos + "dsh web: ".len()..];
+                    let clean_url = part.split_whitespace().next().unwrap_or(part);
+                    let state = handle_for_stdout.state::<HarnessProcess>();
+                    if let Ok(mut current) = state.url.lock() {
+                        *current = Some(clean_url.to_string());
+                    }
+                }
+            }
+        });
+    }
+
     thread::spawn(move || {
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         let deadline = Instant::now() + Duration::from_secs(90);
@@ -143,14 +161,36 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
         };
         let state = handle.state::<HarnessProcess>();
         set_harness_status(&state, if ready { "ready" } else { "failed" });
-            if ready {
+        if ready {
+            let auth_deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < auth_deadline {
+                let has_token = state
+                    .url
+                    .lock()
+                    .ok()
+                    .and_then(|u| u.clone())
+                    .map(|u| u.contains("token="))
+                    .unwrap_or(false);
+                if has_token {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            if let Some(window) = handle.get_webview_window("harness") {
                 let url = state.url.lock().ok().and_then(|url| url.clone());
-                if let (Some(window), Some(url)) = (handle.get_webview_window("harness"), url) {
-                    if let Ok(url) = url.parse() {
+                if let Some(url) = url
+                    && let Ok(url) = url.parse() {
                         let _ = window.navigate(url);
                     }
-                }
+            } else {
+                let handle_main = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    if let Err(e) = show_harness(&handle_main) {
+                        eprintln!("自动打开 Harness 窗口失败：{e}");
+                    }
+                });
             }
+        }
     });
     Ok(())
 }
@@ -158,16 +198,14 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn harness_status(state: State<'_, HarnessProcess>) -> Result<HarnessStatus, String> {
     let mut status = state.status.lock().map_err(|_| "状态锁已损坏")?;
-    if let Some(child) = state.child.lock().map_err(|_| "子进程锁已损坏")?.as_mut() {
-        if let Some(exit) = child.try_wait().map_err(|error| error.to_string())? {
+    if let Some(child) = state.child.lock().map_err(|_| "子进程锁已损坏")?.as_mut()
+        && let Some(exit) = child.try_wait().map_err(|error| error.to_string())? {
             *status = format!("exited ({exit})");
-            if let Ok(menu) = state.status_menu.lock() {
-                if let Some(menu) = menu.as_ref() {
+            if let Ok(menu) = state.status_menu.lock()
+                && let Some(menu) = menu.as_ref() {
                     let _ = menu.set_text("状态：已退出");
                 }
-            }
         }
-    }
     Ok(HarnessStatus {
         status: status.clone(),
         url: state.url.lock().map_err(|_| "URL 锁已损坏")?.clone(),
@@ -524,11 +562,10 @@ items.push(&after_usage);
     }
     items.extend_from_slice(&[&open, &update, &before_quit, &quit]);
     let Ok(menu) = Menu::with_items(app, &items) else { return };
-    if let Ok(tray) = state.tray.lock() {
-if let Some(tray) = tray.as_ref() {
+    if let Ok(tray) = state.tray.lock()
+&& let Some(tray) = tray.as_ref() {
 let _ = tray.set_menu(Some(menu));
 }
-    }
 }
 
 fn start_activity_animation(app: &AppHandle) {
@@ -548,9 +585,9 @@ fn start_activity_animation(app: &AppHandle) {
             let activity = std::fs::read_to_string(&state.activity_path)
                 .unwrap_or_else(|_| "idle".into());
             let activity = activity.trim();
-            if activity == "running" || activity != previous || core_ready != previous_core_ready {
-                if let Ok(tray) = state.tray.lock() {
-                    if let Some(tray) = tray.as_ref() {
+            if (activity == "running" || activity != previous || core_ready != previous_core_ready)
+                && let Ok(tray) = state.tray.lock()
+                    && let Some(tray) = tray.as_ref() {
                         let _ = tray.set_icon_with_as_template(
                             Some(Image::new_owned(
                                 h_icon_rgba(core_ready, activity == "error", (activity == "running").then_some(frame)),
@@ -560,8 +597,6 @@ fn start_activity_animation(app: &AppHandle) {
                             false,
                         );
                     }
-                }
-            }
             previous.clear();
             previous.push_str(activity);
             previous_core_ready = core_ready;
@@ -642,15 +677,24 @@ fn check_updates_from_tray(app: &AppHandle) {
 }
 
 fn run_update_script(root: &PathBuf, script: &str) -> Result<(), String> {
-    let status = Command::new("bash")
+    let output = Command::new("bash")
         .arg(root.join("scripts").join(script))
         .current_dir(root)
-        .status()
+        .output()
         .map_err(|error| format!("无法运行 {script}：{error}"))?;
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
-        Err(format!("{script} 执行失败：{status}"))
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            output.status.to_string()
+        };
+        Err(format!("{script} 执行失败：{detail}"))
     }
 }
 
@@ -707,18 +751,34 @@ fn stop_harness(state: &HarnessProcess) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+fn ensure_path_env() {
+    #[cfg(target_os = "macos")]
+    {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let extra = format!(
+            "{home}/.local/share/pnpm:{home}/.cargo/bin:{home}/Library/pnpm:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin"
+        );
+        let new_path = format!("{extra}:{current}");
+        // SAFETY: Only invoked on app startup before spawning background worker threads.
+        unsafe {
+            std::env::set_var("PATH", new_path);
+        }
+    }
+}
+
 pub fn run() {
+    ensure_path_env();
     tauri::Builder::default()
         .on_window_event(|window, event| {
             #[cfg(target_os = "macos")]
-            if window.label() == "harness" && matches!(event, tauri::WindowEvent::Destroyed) {
-                if let Err(error) = window
+            if window.label() == "harness" && matches!(event, tauri::WindowEvent::Destroyed)
+                && let Err(error) = window
                     .app_handle()
                     .set_activation_policy(tauri::ActivationPolicy::Accessory)
                 {
                     eprintln!("隐藏应用图标失败：{error}");
                 }
-            }
         })
         .setup(|app| {
             #[cfg(target_os = "macos")]

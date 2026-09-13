@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	attributionHeaders,
+	contentHasImage,
 	LlmAdapter,
 	LlmError,
 	ReasoningEffortId,
@@ -11,13 +12,27 @@ import type {
 	LlmResolvedModelInfo,
 	StreamChunk,
 } from "@deepseek-ai/dsh-llm";
+import type { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	Context as PiContext,
+	Model,
+	ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import type { XaiAccountMeta, XaiAuth } from "./auth.js";
-import { toPiContext } from "./context.js";
+import { toPiContext, type ImageBytesStore } from "./context.js";
 import { findXaiModel, KNOWN_XAI_MODELS } from "./models.js";
 import { toStreamChunks } from "./stream.js";
+
+export interface XaiAdapterOptions {
+	resolveAttachments?: () => ImageBytesStore | undefined;
+	resolveImageAccess?: (
+		attachments: ImageBytesStore,
+		ref: ImageAttachmentRef,
+	) => { readonlyPath: string } | undefined;
+}
 
 function isModelVisible(chunk: StreamChunk): boolean {
 	return chunk.type !== "usage" && chunk.type !== "finish";
@@ -40,14 +55,16 @@ export function isQuotaError(error: unknown): boolean {
 }
 
 /** 针对 xAI Responses API 对 payload 进行微调与兼容。 */
+type XaiRequestBody = Record<string, unknown>;
+
 function rewriteXaiPayload(
 	payload: unknown,
 	_modelId: string,
 	sessionId?: string,
-): unknown {
-	if (!payload || typeof payload !== "object") return payload;
-	const body: Record<string, unknown> = {
-		...(payload as Record<string, unknown>),
+): XaiRequestBody {
+	if (!payload || typeof payload !== "object") return {};
+	const body: XaiRequestBody = {
+		...(payload as XaiRequestBody),
 	};
 
 	if (Array.isArray(body["input"])) {
@@ -114,7 +131,10 @@ function rewriteXaiPayload(
 export class XaiAdapter extends LlmAdapter {
 	private readonly streamSimple = openAIResponsesApi().streamSimple;
 
-	constructor(private readonly auth: XaiAuth) {
+	constructor(
+		private readonly auth: XaiAuth,
+		private readonly adapterOptions?: XaiAdapterOptions,
+	) {
 		super();
 	}
 
@@ -122,9 +142,7 @@ export class XaiAdapter extends LlmAdapter {
 		return { id: provider, name: "xAI (OAuth)" };
 	}
 
-	override async listModels(
-		provider: string,
-	): Promise<readonly LlmModelInfo[]> {
+	override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
 		this.assertProvider(provider);
 		if ((await this.auth.candidates()).length === 0) return [];
 		return KNOWN_XAI_MODELS.map((model) => ({
@@ -178,6 +196,33 @@ export class XaiAdapter extends LlmAdapter {
 			);
 		}
 
+		const model = this.model(options.model, options.provider);
+		const containsImage = options.messages.some((message) =>
+			contentHasImage(message.content),
+		);
+		if (containsImage && !model.input.includes("image")) {
+			throw new LlmError(
+				`xAI model "${model.id}" does not support image input`,
+				"UNSUPPORTED_CONTENT",
+			);
+		}
+		const attachments = containsImage
+			? this.adapterOptions?.resolveAttachments?.()
+			: undefined;
+		if (containsImage && !attachments) {
+			throw new LlmError(
+				"xAI image input requires the durable attachment service",
+				"UNSUPPORTED_CONTENT",
+			);
+		}
+		const imageContext = attachments
+			? {
+					attachments,
+					resolveImageAccess: this.adapterOptions?.resolveImageAccess,
+				}
+			: undefined;
+		const context = await toPiContext(options, imageContext);
+
 		let lastQuota: unknown;
 		for (let index = 0; index < accounts.length; index += 1) {
 			const account = accounts[index]!;
@@ -185,7 +230,11 @@ export class XaiAdapter extends LlmAdapter {
 			let switched = false;
 			const pending: StreamChunk[] = [];
 			try {
-				for await (const chunk of this.streamWithAccount(options, account)) {
+				for await (const chunk of this.streamWithAccount(
+					options,
+					account,
+					context,
+				)) {
 					if (!yieldedVisible) {
 						if (
 							chunk.type === "finish" &&
@@ -233,6 +282,7 @@ export class XaiAdapter extends LlmAdapter {
 	private async *streamWithAccount(
 		options: GenerateOptions,
 		account: XaiAccountMeta,
+		context: PiContext,
 	): AsyncIterable<StreamChunk> {
 		const model = this.model(options.model, options.provider);
 		const apiKey = await this.auth.apiKeyFor(account);
@@ -257,12 +307,10 @@ export class XaiAdapter extends LlmAdapter {
 
 		const events = this.streamSimple(
 			model as Model<"openai-responses">,
-			toPiContext(options),
+			context,
 			{
 				apiKey,
-				...(reasoning === undefined || reasoning === "off"
-					? {}
-					: { reasoning }),
+				...(reasoning === undefined || reasoning === "off" ? {} : { reasoning }),
 				...(options.temperature === undefined
 					? {}
 					: { temperature: options.temperature }),

@@ -68,6 +68,7 @@ export function apply(ctx: Context, config: Config): void {
 			},
 		]);
 	};
+	// SAFETY: plugin SDK types lag core; register() exists on ctx.settings at runtime.
 	const scope = (
 		ctx as unknown as {
 			settings: {
@@ -77,7 +78,7 @@ export function apply(ctx: Context, config: Config): void {
 					options: { base: Config },
 				) => {
 					get: () => Config;
-					update: (patch: object) => Promise<void>;
+					update: (patch: Record<string, unknown>) => Promise<void>;
 					watch: (callback: (next: Config) => void) => () => void;
 				};
 			};
@@ -100,7 +101,21 @@ export function apply(ctx: Context, config: Config): void {
 			ctx.logger.warn(error);
 		});
 	registerModelActivity(ctx);
-	ctx.llm.registerAdapter([PROVIDER, "xai-auth"], new XaiAdapter(auth));
+	ctx.llm.registerAdapter(
+		[PROVIDER, "xai-auth"],
+		new XaiAdapter(auth, {
+			resolveAttachments: () => ctx.get("attachments"),
+			resolveImageAccess: (attachments, ref) => {
+				const fs = ctx.get("fs") as
+					| { processPathFromHostPath?: (path: string) => string | undefined }
+					| undefined;
+				const hostPath = attachments.imageHostPath?.(ref);
+				if (hostPath === undefined) return undefined;
+				const readonlyPath = fs?.processPathFromHostPath?.(hostPath);
+				return readonlyPath ? { readonlyPath } : undefined;
+			},
+		}),
+	);
 	registerCommands(ctx, auth);
 	registerWebRoutes(ctx, auth);
 }

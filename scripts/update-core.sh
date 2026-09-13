@@ -4,26 +4,31 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 core="$root/core"
 
-if [[ -n "$(git -C "$core" status --porcelain)" ]]; then
+if ! git -C "$core" diff --quiet || ! git -C "$core" diff --cached --quiet; then
 	echo 'core/ 存在未提交修改，拒绝更新。' >&2
 	exit 1
 fi
 
 git -C "$core" fetch origin master --quiet
-git -C "$core" checkout --detach origin/master
+git -C "$core" checkout -f --detach origin/master
+git -C "$core" clean -dfq packages/ 2>/dev/null || true
 CI=true pnpm --dir "$core" install --frozen-lockfile --ignore-scripts
 node "$core/packages/subprocess/subprocess-local/scripts/ensure-spawn-helper.mjs"
 (
 	cd "$core"
-	./node_modules/.bin/tsc -b tsconfig.host.json
-	./node_modules/.bin/tsdown --env.DSH_BUILD_FACE host
-	./node_modules/.bin/tsc -b tsconfig.client.json
-	./node_modules/.bin/tsdown --env.DSH_BUILD_FACE client
-	(cd apps/web && ./node_modules/.bin/vite build)
+	export CI=true
+	export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=8192"
+	pnpm run clean
+	pnpm run build
 )
 CI=true pnpm --dir "$root/plugins/dsh-oauth" install --frozen-lockfile
 pnpm --dir "$root/plugins/dsh-oauth" build
 pnpm --dir "$root/plugins/dsh-oauth" test
+if [[ -d "$root/plugins/dsh-antigravity" ]]; then
+	CI=true pnpm --dir "$root/plugins/dsh-antigravity" install --frozen-lockfile
+	pnpm --dir "$root/plugins/dsh-antigravity" build
+	pnpm --dir "$root/plugins/dsh-antigravity" test
+fi
 CI=true pnpm --dir "$root/plugins/dsh-ponytail" install --frozen-lockfile
 pnpm --dir "$root/plugins/dsh-ponytail" build
 pnpm --dir "$root/plugins/dsh-ponytail" test

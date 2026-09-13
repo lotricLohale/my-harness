@@ -102,7 +102,19 @@ export function apply(ctx: Context, config: Config): void {
 			ctx.logger.warn(error);
 		});
 	registerModelActivity(ctx);
-	ctx.llm.registerAdapter([PROVIDER], new AntigravityAdapter(provider, auth));
+	ctx.llm.registerAdapter(
+		[PROVIDER],
+		new AntigravityAdapter(provider, auth, {
+			resolveAttachments: () => ctx.get("attachments"),
+			resolveImageAccess: (attachments, ref) => {
+				const fs = ctx.get("fs");
+				const hostPath = attachments.imageHostPath(ref);
+				if (hostPath === undefined) return undefined;
+				const readonlyPath = fs?.processPathFromHostPath(hostPath);
+				return readonlyPath ? { readonlyPath } : undefined;
+			},
+		}),
+	);
 	registerCommands(ctx, auth);
 	registerWebRoutes(ctx, auth);
 }
