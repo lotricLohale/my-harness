@@ -101,6 +101,29 @@ export function apply(ctx: Context, config: Config): void {
 			ctx.logger.warn(error);
 		});
 	registerModelActivity(ctx);
+	ctx.inject(["agentDefaultModel"], (scoped) => {
+		// SAFETY: plugin SDK types lag core; agentDefaultModel is on ctx at runtime.
+		const defaults = (
+			scoped as unknown as {
+				agentDefaultModel: {
+					currentSelection: () => {
+						provider: string;
+						model: string;
+						reasoningEffort?: string;
+					};
+					saveSelection: (next: {
+						provider: string;
+						model: string;
+						reasoningEffort?: string;
+					}) => Promise<void>;
+				};
+			}
+		).agentDefaultModel;
+		const current = defaults.currentSelection();
+		if (current.provider === "xai-auth") {
+			void defaults.saveSelection({ ...current, provider: PROVIDER });
+		}
+	});
 	ctx.llm.registerAdapter(
 		[PROVIDER, "xai-auth"],
 		new XaiAdapter(auth, {

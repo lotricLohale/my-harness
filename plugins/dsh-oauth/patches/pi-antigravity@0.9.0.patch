@@ -1,0 +1,94 @@
+diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
+--- a/src/auth/oauth.ts
++++ b/src/auth/oauth.ts
+@@ -149,7 +149,7 @@ function startCallbackServer(expectedState: string): Promise<CallbackServer> {
+       }
+ 
+       res.writeHead(200, oauthCallbackHeaders());
+-      res.end("Antigravity authentication complete. You can close this window and return to Pi.");
++      res.end("Antigravity authentication complete. You can close this window and return to DSH.");
+       finish(() => resolveCode({ code, state }));
+     });
+ 
+@@ -340,7 +340,7 @@ export async function loginAntigravity(
+     callbacks.onAuth({
+       url: `${AUTH_URL}?${authParams.toString()}`,
+       instructions:
+-        "Complete Google sign-in. Pi captures the local callback automatically — or, on a remote/headless machine, paste the callback URL when prompted.",
++        "Complete Google sign-in. DSH captures the local callback automatically — or, on a remote/headless machine, paste the callback URL when prompted.",
+     });
+ 
+     const { code, state: returnedState } = await acquireAuthCode(state, {
+diff --git a/src/stream/stream.ts b/src/stream/stream.ts
+--- a/src/stream/stream.ts
++++ b/src/stream/stream.ts
+@@ -1011,6 +1011,9 @@ export function friendlyAntigravityError(status: number | undefined, text: strin
+     if (/Request contains an invalid argument/i.test(msg)) {
+       return `Antigravity rejected this request (${msg}). Next: retry once; if it keeps failing, switch models or re-login.`;
+     }
++    if (/location is not supported|FAILED_PRECONDITION/i.test(msg)) {
++      return `Antigravity blocked this request because the current account or network location is not supported. Next: switch network/VPN, or use another Google account whose region is allowed. Do not re-login expecting a different result. Backend said: ${msg}`;
++    }
+     return `Bad request from Antigravity. Next: retry once, then run /login antigravity if it keeps failing. Backend said: ${msg}`;
+   }
+   if (status === 401) {
+@@ -1484,17 +1487,25 @@ export function streamAntigravity(
+ 
+           for (const endpoint of endpointCandidates()) {
+             setLastEndpoint(endpoint);
+-            response = await fetchWithHeaderDeadline(
+-              `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+-              {
+-                method: "POST",
+-                headers: requestHeaders,
+-                body,
+-              },
+-              opts.signal,
+-              streamHeaderTimeoutMs(),
+-              streamStallTimeoutMs(),
+-            );
++            try {
++              response = await fetchWithHeaderDeadline(
++                `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
++                {
++                  method: "POST",
++                  headers: requestHeaders,
++                  body,
++                },
++                opts.signal,
++                streamHeaderTimeoutMs(),
++                streamStallTimeoutMs(),
++              );
++            } catch (error) {
++              if (opts.signal?.aborted) throw error;
++              lastText = safeError(error);
++              setLastError(lastText);
++              response = undefined;
++              continue;
++            }
+             setLastStatus(response.status);
+             if (response.ok) break;
+             lastText = await response.text();
+diff --git a/src/utils/security.ts b/src/utils/security.ts
+--- a/src/utils/security.ts
++++ b/src/utils/security.ts
+@@ -67,7 +67,17 @@ export function maskEmail(email: string | undefined): string | undefined {
+   return `${maskedName}@${domain}`;
+ }
+ 
+-export function safeError(error: unknown): string {
+-  const raw = error instanceof Error ? error.message : String(error);
++export function safeError(error: unknown, depth = 0): string {
++  if (depth > 3) return "";
++  if (!(error instanceof Error)) return redactSecrets(String(error));
++  const code =
++    typeof (error as { code?: unknown }).code === "string"
++      ? (error as { code: string }).code
++      : undefined;
++  const cause =
++    error.cause !== undefined ? safeError(error.cause, depth + 1) : "";
++  const raw = [error.message, code && code !== error.message ? code : "", cause]
++    .filter(Boolean)
++    .join(": ");
+   return redactSecrets(raw);
+ }

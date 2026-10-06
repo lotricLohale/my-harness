@@ -16,7 +16,12 @@ import type {
 	ImageAttachmentRef,
 } from "@deepseek-ai/dsh-attachment";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { Api, Context as PiContext, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	Context as PiContext,
+	Model,
+	ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import type { AntigravityAccountMeta, AntigravityAuth } from "./auth.js";
 import { toPiContext } from "./context.js";
 import { toStreamChunks } from "./stream.js";
@@ -34,6 +39,10 @@ function isModelVisible(chunk: StreamChunk): boolean {
 	return chunk.type !== "usage" && chunk.type !== "finish";
 }
 
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 /** 判断上游错误是否明确表示账号限额或速率限制。 */
 export function isQuotaError(error: unknown): boolean {
 	const code =
@@ -41,11 +50,23 @@ export function isQuotaError(error: unknown): boolean {
 			?.status ??
 		(error as { statusCode?: unknown } | null)?.statusCode ??
 		(error as { code?: unknown } | null)?.code;
-	const text = error instanceof Error ? error.message : String(error);
+	const text = errorText(error);
 	return (
 		code === 429 ||
 		/quota reached|individual quota reached|rate limited/i.test(text)
 	);
+}
+
+/** 传输层瞬时失败：代理 RST、空闲 socket、DNS/TCP 在拿到 HTTP 状态前就断了。 */
+export function isTransientFetchError(error: unknown): boolean {
+	return /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|UND_ERR_|other side closed|socket hang up|network/i.test(
+		errorText(error),
+	);
+}
+
+function finishErrorMessage(chunk: StreamChunk): string | undefined {
+	if (chunk.type !== "finish" || chunk.reason.kind !== "error") return undefined;
+	return chunk.reason.failure.message;
 }
 
 /** 把 pi-antigravity provider 接入 Harness LLM seam。 */
@@ -62,9 +83,7 @@ export class AntigravityAdapter extends LlmAdapter {
 		return { id: provider, name: this.provider.name ?? "Antigravity" };
 	}
 
-	override async listModels(
-		provider: string,
-	): Promise<readonly LlmModelInfo[]> {
+	override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
 		this.assertProvider(provider);
 		if ((await this.auth.candidates()).length === 0) return [];
 		return this.provider.models.map((model) => ({
@@ -152,50 +171,70 @@ export class AntigravityAdapter extends LlmAdapter {
 		let lastQuota: unknown;
 		for (let index = 0; index < accounts.length; index += 1) {
 			const account = accounts[index]!;
-			let yieldedVisible = false;
+			let fetchRetries = 0;
 			let switched = false;
-			const pending: StreamChunk[] = [];
-			try {
-				for await (const chunk of this.streamWithAccount(
-					options,
-					account,
-					context,
-				)) {
-					if (!yieldedVisible) {
-						if (
-							chunk.type === "finish" &&
-							chunk.reason.kind === "error" &&
-							isQuotaError(chunk.reason.failure.message)
-						) {
-							lastQuota = chunk.reason.failure.message;
-							await this.auth.markExhausted(account);
-							switched = true;
-							break;
+			retry: while (true) {
+				let yieldedVisible = false;
+				switched = false;
+				const pending: StreamChunk[] = [];
+				try {
+					for await (const chunk of this.streamWithAccount(
+						options,
+						account,
+						context,
+					)) {
+						if (!yieldedVisible) {
+							const failure = finishErrorMessage(chunk);
+							if (failure !== undefined && isQuotaError(failure)) {
+								lastQuota = failure;
+								await this.auth.markExhausted(account);
+								switched = true;
+								break;
+							}
+							if (
+								failure !== undefined &&
+								isTransientFetchError(failure) &&
+								fetchRetries < 1 &&
+								options.signal?.aborted !== true
+							) {
+								fetchRetries += 1;
+								continue retry;
+							}
+							if (!isModelVisible(chunk)) {
+								pending.push(chunk);
+								continue;
+							}
+							yieldedVisible = true;
+							for (const buffered of pending) yield buffered;
+							pending.length = 0;
 						}
-						if (!isModelVisible(chunk)) {
-							pending.push(chunk);
-							continue;
-						}
-						yieldedVisible = true;
-						for (const buffered of pending) yield buffered;
-						pending.length = 0;
+						yield chunk;
 					}
-					yield chunk;
+					if (switched) break;
+					for (const buffered of pending) yield buffered;
+					return;
+				} catch (error) {
+					if (
+						!yieldedVisible &&
+						isTransientFetchError(error) &&
+						fetchRetries < 1 &&
+						options.signal?.aborted !== true
+					) {
+						fetchRetries += 1;
+						continue;
+					}
+					if (!yieldedVisible && isQuotaError(error)) {
+						lastQuota = error;
+						await this.auth.markExhausted(account);
+						switched = true;
+						break;
+					}
+					throw error;
 				}
-				if (switched) {
-					if (index + 1 < accounts.length) continue;
-					break;
-				}
-				for (const buffered of pending) yield buffered;
-				return;
-			} catch (error) {
-				if (!yieldedVisible && isQuotaError(error)) {
-					lastQuota = error;
-					await this.auth.markExhausted(account);
-					if (index + 1 < accounts.length) continue;
-					break;
-				}
-				throw error;
+			}
+			if (switched) {
+				if (index + 1 < accounts.length) continue;
+				break;
 			}
 		}
 		throw new LlmError(
@@ -224,9 +263,7 @@ export class AntigravityAdapter extends LlmAdapter {
 			...(options.temperature === undefined
 				? {}
 				: { temperature: options.temperature }),
-			...(options.maxTokens === undefined
-				? {}
-				: { maxTokens: options.maxTokens }),
+			...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
 			...(options.sessionId === undefined
 				? {}
 				: { sessionId: String(options.sessionId) }),

@@ -4,7 +4,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 } from "@earendil-works/pi-ai";
-import { AntigravityAdapter } from "../src/adapter.js";
+import { AntigravityAdapter, isTransientFetchError } from "../src/adapter.js";
 import { accountCandidates, type AntigravityAccountMeta } from "../src/auth.js";
 
 function message(text = "ok"): AssistantMessage {
@@ -155,6 +155,69 @@ test("所有账号限额耗尽时标记最后账号并返回统一错误", async
 		}
 	}, /All Antigravity accounts are rate-limited or exhausted/);
 	assert.deepEqual(fakeAuth.exhausted, ["only"]);
+});
+
+test("fetch failed 在可见输出前会重试一次", async () => {
+	const used: string[] = [];
+	async function* failThenOk(
+		_model: unknown,
+		_context: unknown,
+		init: { apiKey: string },
+	): AsyncGenerator<AssistantMessageEvent> {
+		used.push(init.apiKey);
+		if (used.length === 1) {
+			const failed = message("");
+			failed.content = [];
+			failed.stopReason = "error";
+			failed.errorMessage = "fetch failed";
+			yield { type: "error", reason: "error", error: failed };
+			return;
+		}
+		yield* okEvents("recovered");
+	}
+	const adapter = new AntigravityAdapter(
+		provider(failThenOk),
+		auth([{ id: "only", credentialRef: "A" }]),
+	);
+	const chunks = [];
+	for await (const chunk of adapter.stream(options())) chunks.push(chunk);
+	assert.deepEqual(used, ["only", "only"]);
+	assert.equal(
+		chunks.some(
+			(chunk) => chunk.type === "text-delta" && chunk.text === "recovered",
+		),
+		true,
+	);
+});
+
+test("抛出 fetch failed 在可见输出前会重试一次", async () => {
+	let calls = 0;
+	const adapter = new AntigravityAdapter(
+		provider(() => {
+			calls += 1;
+			if (calls === 1) throw new Error("fetch failed");
+			return okEvents("recovered");
+		}),
+		auth([{ id: "only", credentialRef: "A" }]),
+	);
+	const chunks = [];
+	for await (const chunk of adapter.stream(options())) chunks.push(chunk);
+	assert.equal(calls, 2);
+	assert.equal(
+		chunks.some(
+			(chunk) => chunk.type === "text-delta" && chunk.text === "recovered",
+		),
+		true,
+	);
+});
+
+test("isTransientFetchError 识别传输层失败", () => {
+	assert.equal(isTransientFetchError(new Error("fetch failed")), true);
+	assert.equal(
+		isTransientFetchError(new Error("fetch failed: UND_ERR_SOCKET")),
+		true,
+	);
+	assert.equal(isTransientFetchError(new Error("Quota reached")), false);
 });
 
 test("已有部分输出后遇到 quota 不切换账号", async () => {
