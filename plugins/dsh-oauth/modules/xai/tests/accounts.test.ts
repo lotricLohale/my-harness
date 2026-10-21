@@ -62,6 +62,7 @@ test("有授权账号时才列出模型分组", async () => {
 	const models = await adapter.listModels("xai-oauth");
 	assert.equal(models.length > 0, true);
 	assert.equal(models[0]?.provider, "xai-oauth");
+	assert.equal(models[0]?.id, "grok-4.7");
 });
 
 test("账号候选按启用、冷却和高优先级排序", () => {

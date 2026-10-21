@@ -36,7 +36,7 @@ export function registerCommands(ctx: Context, auth: XaiAuth): void {
 
 	const status = async () => ({
 		kind: "success" as const,
-		text: `provider=xai\n${await auth.status()}\nmodels=grok-4.6,grok-4.5,grok-4.3,...`,
+		text: `provider=xai\n${await auth.status()}\nmodels=grok-4.7,grok-4.6,grok-4.5,...`,
 	});
 
 	ctx.commands.register({
@@ -96,9 +96,7 @@ export function registerCommands(ctx: Context, auth: XaiAuth): void {
 				const usage = await fetchAccountUsage(apiKey);
 				const lines = [
 					`xAI 账号用量 (${account.email ?? account.username ?? account.id}):`,
-					usage.subscriptionTier
-						? `订阅等级: ${usage.subscriptionTier}`
-						: undefined,
+					usage.subscriptionTier ? `订阅等级: ${usage.subscriptionTier}` : undefined,
 					usage.creditUsagePercent !== undefined
 						? `包含额度使用率: ${formatPercent(usage.creditUsagePercent / 100)}`
 						: undefined,

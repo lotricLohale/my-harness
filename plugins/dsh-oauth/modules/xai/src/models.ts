@@ -13,6 +13,23 @@ export interface XaiModelConfig {
 
 export const KNOWN_XAI_MODELS: readonly XaiModelConfig[] = [
 	{
+		id: "grok-4.7",
+		name: "Grok 4.7",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+		contextWindow: 500_000,
+		maxTokens: 131_072,
+		thinkingLevelMap: {
+			off: null,
+			minimal: "low",
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+		},
+	},
+	{
 		id: "grok-4.6",
 		name: "Grok 4.6",
 		reasoning: true,
@@ -111,7 +128,7 @@ export const KNOWN_XAI_MODELS: readonly XaiModelConfig[] = [
 	},
 ];
 
-export const DEFAULT_XAI_MODEL = "grok-4.6";
+export const DEFAULT_XAI_MODEL = "grok-4.7";
 
 export function findXaiModel(id: string): XaiModelConfig | undefined {
 	const normalized = id.toLowerCase();

@@ -5,10 +5,26 @@ import {
 	credentialsFromTokenPayload,
 	decodeJwtPayload,
 	extractIdentityFromIdToken,
+	parseAuthorizationInput,
 	pkcePair,
 	XAI_OAUTH_CLIENT_ID,
 	XAI_OAUTH_TOKEN_URL,
 } from "../src/oauth.js";
+
+test("parseAuthorizationInput 接受 URL、query 和裸授权码", () => {
+	assert.deepEqual(
+		parseAuthorizationInput("http://127.0.0.1:56121/callback?code=abc&state=s1"),
+		{ code: "abc", state: "s1" },
+	);
+	assert.deepEqual(parseAuthorizationInput("code=xyz&state=s2"), {
+		code: "xyz",
+		state: "s2",
+	});
+	assert.deepEqual(parseAuthorizationInput("  raw-code  "), {
+		code: "raw-code",
+	});
+	assert.deepEqual(parseAuthorizationInput(""), {});
+});
 
 test("pkcePair 生成有效的 base64url verifier 和 challenge", () => {
 	const { verifier, challenge } = pkcePair();

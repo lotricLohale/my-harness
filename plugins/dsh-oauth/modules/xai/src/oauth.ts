@@ -36,15 +36,43 @@ export function pkcePair(): { verifier: string; challenge: string } {
 	return { verifier, challenge };
 }
 
+/** 从回调 URL、querystring 或裸授权码里取出 code/state。 */
+export function parseAuthorizationInput(input: string): {
+	code?: string;
+	state?: string;
+} {
+	const value = input.trim();
+	if (!value) return {};
+	try {
+		const url = new URL(value);
+		return {
+			code: url.searchParams.get("code") ?? undefined,
+			state: url.searchParams.get("state") ?? undefined,
+		};
+	} catch {
+		// not a URL
+	}
+	if (value.includes("#")) {
+		const [code, state] = value.split("#", 2);
+		return { code, state };
+	}
+	if (value.includes("code=")) {
+		const params = new URLSearchParams(value);
+		return {
+			code: params.get("code") ?? undefined,
+			state: params.get("state") ?? undefined,
+		};
+	}
+	return { code: value };
+}
+
 export function decodeJwtPayload(token: string): Record<string, unknown> {
 	const parts = token.split(".");
 	if (parts.length !== 3 || !parts[1]) return {};
 	try {
 		const payload = Buffer.from(parts[1], "base64url").toString("utf8");
 		const parsed = JSON.parse(payload) as unknown;
-		return typeof parsed === "object" &&
-			parsed !== null &&
-			!Array.isArray(parsed)
+		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
 			? (parsed as Record<string, unknown>)
 			: {};
 	} catch {
@@ -310,10 +338,31 @@ export function createXaiOAuth(): XaiOAuthService {
 				);
 				callbacks.onAuth({
 					url: authorizeUrl,
-					instructions: "在系统浏览器中完成 xAI (Grok) 授权登录。",
+					instructions:
+						"在系统浏览器中完成 xAI (Grok) 授权。若页面显示授权码，或跳转到打不开的 localhost 链接，把授权码或完整回调 URL 粘贴回 DeepSeek Harness。",
 				});
 
-				callback = await callbackServer.waitForCallback(callbacks.signal);
+				const wait = callbackServer.waitForCallback(callbacks.signal);
+				const pasted = callbacks
+					.onPrompt({
+						message:
+							"粘贴授权码或完整回调 URL（浏览器地址栏里 localhost/127.0.0.1 那一行也可以）",
+						placeholder: `${callbackServer.redirectUri}?code=...`,
+					})
+					.then((input) => {
+						const parsed = parseAuthorizationInput(input);
+						if (!parsed.code) {
+							throw new Error("xAI authorization failed: pasted input had no code");
+						}
+						if (parsed.state && parsed.state !== state) {
+							throw new Error("xAI authorization failed: state mismatch");
+						}
+						callbackServer.resolveCallback({
+							code: parsed.code,
+							state: parsed.state ?? state,
+						});
+					});
+				callback = await Promise.race([wait, pasted.then(() => wait)]);
 			} finally {
 				callbackServer.close();
 			}
@@ -325,9 +374,7 @@ export function createXaiOAuth(): XaiOAuthService {
 				throw new Error(`xAI authorization failed: ${callback.error}`);
 			}
 			if (!callback.code) {
-				throw new Error(
-					"xAI authorization failed: no authorization code returned",
-				);
+				throw new Error("xAI authorization failed: no authorization code returned");
 			}
 
 			const data = await exchangeXaiToken(
@@ -370,11 +417,7 @@ export function createXaiOAuth(): XaiOAuthService {
 				signal,
 			);
 
-			return credentialsFromTokenPayload(
-				data,
-				tokenEndpoint,
-				credentials.refresh,
-			);
+			return credentialsFromTokenPayload(data, tokenEndpoint, credentials.refresh);
 		},
 
 		getApiKey(credentials: OAuthCredentials): string {

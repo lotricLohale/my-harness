@@ -7,6 +7,7 @@ import type { XaiAccountPayload } from "./web-data.js";
 const ACCOUNTS_PATH = "/api/xai/accounts";
 const ACCOUNT_PATH_PREFIX = "/api/xai/accounts/";
 const LOGIN_PATH = "/api/xai/login";
+const LOGIN_COMPLETE_PATH = "/api/xai/login/complete";
 
 interface WebRoute {
 	kind: "exact" | "prefix";
@@ -56,8 +57,7 @@ export function assertSameOrigin(
 	const origin = req.headers.origin;
 	if (typeof origin === "string") {
 		const host = req.headers.host;
-		if (typeof host !== "string")
-			return "cross-origin requests are not allowed";
+		if (typeof host !== "string") return "cross-origin requests are not allowed";
 		try {
 			if (new URL(origin).host !== host)
 				return "cross-origin requests are not allowed";
@@ -95,8 +95,8 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 /** 注册 xAI 同源管理接口，随 fiber 自动卸载。 */
 export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
 	ctx.inject(["webServer"], (wctx) => {
-		const webServer = (wctx as unknown as { webServer: WebServerLike })
-			.webServer;
+		// SAFETY: plugin SDK types lag core; webServer is injected at runtime.
+		const webServer = (wctx as unknown as { webServer: WebServerLike }).webServer;
 		const accountRoute: WebRoute = {
 			kind: "exact",
 			path: ACCOUNTS_PATH,
@@ -106,10 +106,9 @@ export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
 					return;
 				}
 				const includeQuota =
-					new URL(
-						req.url ?? ACCOUNTS_PATH,
-						"http://localhost",
-					).searchParams.get("usage") !== "0";
+					new URL(req.url ?? ACCOUNTS_PATH, "http://localhost").searchParams.get(
+						"usage",
+					) !== "0";
 				writeJson(res, 200, {
 					accounts: (await auth.accountPayloads(
 						includeQuota,
@@ -131,10 +130,8 @@ export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
 					writeJson(res, 403, { error: rejected });
 					return;
 				}
-				const pathname = new URL(
-					req.url ?? ACCOUNT_PATH_PREFIX,
-					"http://localhost",
-				).pathname;
+				const pathname = new URL(req.url ?? ACCOUNT_PATH_PREFIX, "http://localhost")
+					.pathname;
 				if (!pathname.startsWith(ACCOUNT_PATH_PREFIX)) {
 					writeJson(res, 404, { error: "account not found" });
 					return;
@@ -150,8 +147,7 @@ export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
 					const removed = await auth.removeAccount(id);
 					writeJson(res, 200, { ok: true, id: removed.id });
 				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
+					const message = error instanceof Error ? error.message : String(error);
 					writeJson(res, /was not found/.test(message) ? 404 : 500, {
 						error: message,
 					});
@@ -179,8 +175,7 @@ export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
 					try {
 						await openBrowser(attempt.url);
 					} catch (error) {
-						browserError =
-							error instanceof Error ? error.message : String(error);
+						browserError = error instanceof Error ? error.message : String(error);
 					}
 					writeJson(res, 202, {
 						ok: true,
@@ -195,11 +190,45 @@ export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
 				}
 			},
 		};
+		const completeRoute: WebRoute = {
+			kind: "exact",
+			path: LOGIN_COMPLETE_PATH,
+			handler: async (req, res) => {
+				if (req.method !== "POST") {
+					writeJson(res, 405, { error: "method not allowed" });
+					return;
+				}
+				const rejected = assertSameOriginJson(req);
+				if (rejected !== undefined) {
+					writeJson(res, 415, { error: rejected });
+					return;
+				}
+				try {
+					const body = await readJson(req);
+					const paste =
+						typeof body === "object" &&
+						body !== null &&
+						"paste" in body &&
+						typeof (body as { paste?: unknown }).paste === "string"
+							? (body as { paste: string }).paste
+							: "";
+					auth.submitLoginPaste(paste);
+					writeJson(res, 202, { ok: true });
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					writeJson(res, /not waiting for a code/.test(message) ? 409 : 400, {
+						error: message,
+					});
+				}
+			},
+		};
 		ctx.effect(() => {
 			const disposeAccounts = webServer.register(accountRoute);
 			const disposeDelete = webServer.register(deleteRoute);
 			const disposeLogin = webServer.register(loginRoute);
+			const disposeComplete = webServer.register(completeRoute);
 			return () => {
+				disposeComplete();
 				disposeLogin();
 				disposeDelete();
 				disposeAccounts();

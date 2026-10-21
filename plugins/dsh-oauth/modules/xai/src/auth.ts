@@ -112,6 +112,7 @@ export class XaiAuth {
 	readonly legacyRef: CredentialRef;
 	private refreshTasks = new Map<string, Promise<OAuthCredentials>>();
 	private loginTask: Promise<void> | undefined;
+	private pasteResolver: ((value: string) => void) | undefined;
 	private fallbackAccounts: XaiAccountMeta[] = [];
 	private lastAccountId: string | undefined;
 	private writeConfig:
@@ -203,10 +204,11 @@ export class XaiAuth {
 				prompt.resolve(value);
 			},
 			onDeviceCode: () => {},
+			// Race the local callback against a pasted code/URL from the settings UI.
 			onPrompt: () =>
-				Promise.reject(
-					new Error("xAI login requested unsupported interactive input"),
-				),
+				new Promise<string>((resolve) => {
+					this.pasteResolver = resolve;
+				}),
 			onSelect: () => Promise.resolve(undefined),
 		};
 		const completion = this.oauth
@@ -216,6 +218,7 @@ export class XaiAuth {
 			})
 			.finally(() => {
 				this.loginTask = undefined;
+				this.pasteResolver = undefined;
 			});
 		this.loginTask = completion;
 		void completion.catch((error: unknown) => {
@@ -224,6 +227,18 @@ export class XaiAuth {
 		});
 		const details = await prompt.promise;
 		return { ...details, completion };
+	}
+
+	/** 把设置页粘贴的授权码或回调 URL 交给正在进行的登录。 */
+	submitLoginPaste(paste: string): void {
+		const value = paste.trim();
+		if (this.pasteResolver === undefined) {
+			throw new Error("xAI login is not waiting for a code");
+		}
+		if (!value) throw new Error("pasted xAI authorization input was empty");
+		const resolve = this.pasteResolver;
+		this.pasteResolver = undefined;
+		resolve(value);
 	}
 
 	/** OAuth 是否仍在等待浏览器回调。 */

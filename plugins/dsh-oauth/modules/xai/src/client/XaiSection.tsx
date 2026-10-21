@@ -49,6 +49,16 @@ async function startLogin(): Promise<{ url?: string; browserError?: string }> {
 	return { url: body.url, browserError: body.browserError };
 }
 
+async function completeLogin(paste: string): Promise<void> {
+	const res = await fetch("/api/xai/login/complete", {
+		method: "POST",
+		headers: { "Content-Type": "application/json", Accept: "application/json" },
+		body: JSON.stringify({ paste }),
+	});
+	const body = (await res.json()) as { error?: string };
+	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+}
+
 function resetText(value: string | undefined): string {
 	if (value === undefined) return "重置时间未知";
 	const time = Date.parse(value);
@@ -96,9 +106,7 @@ export function AccountCard({
 				；凭据：{account.configured ? "已配置" : "未配置"}
 			</p>
 			{account.expires !== undefined && (
-				<p style={{ margin: "6px 0 0" }}>
-					凭据过期：{resetText(account.expires)}
-				</p>
+				<p style={{ margin: "6px 0 0" }}>凭据过期：{resetText(account.expires)}</p>
 			)}
 			{account.exhaustedUntil !== undefined && (
 				<p style={{ margin: "6px 0 0" }}>
@@ -148,6 +156,7 @@ export function XaiAccountsPanel() {
 	>("idle");
 	const [loginError, setLoginError] = useState<string | undefined>();
 	const [loginUrl, setLoginUrl] = useState<string | undefined>();
+	const [paste, setPaste] = useState("");
 	const [deletingId, setDeletingId] = useState<string | undefined>();
 	const [deleteError, setDeleteError] = useState<string | undefined>();
 
@@ -213,6 +222,7 @@ export function XaiAccountsPanel() {
 		setLoginState("starting");
 		setLoginError(undefined);
 		setLoginUrl(undefined);
+		setPaste("");
 		try {
 			const started = await startLogin();
 			setLoginUrl(started.url);
@@ -220,6 +230,18 @@ export function XaiAccountsPanel() {
 			setLoginState("waiting");
 		} catch (error) {
 			setLoginState("error");
+			setLoginError(error instanceof Error ? error.message : String(error));
+		}
+	};
+
+	const onSubmitPaste = async (event: {
+		preventDefault(): void;
+	}): Promise<void> => {
+		event.preventDefault();
+		setLoginError(undefined);
+		try {
+			await completeLogin(paste);
+		} catch (error) {
 			setLoginError(error instanceof Error ? error.message : String(error));
 		}
 	};
@@ -248,7 +270,26 @@ export function XaiAccountsPanel() {
 				</button>
 			</div>
 			{loginState === "waiting" && (
-				<p role="status">已打开浏览器，等待授权完成…</p>
+				<>
+					<p role="status">已打开浏览器，等待授权完成…</p>
+					<form
+						onSubmit={(event) => void onSubmitPaste(event)}
+						style={{ display: "grid", gap: 8, margin: "8px 0 12px" }}
+					>
+						<label style={{ display: "grid", gap: 4 }}>
+							授权码或回调 URL
+							<input
+								value={paste}
+								onChange={(event) => setPaste(event.target.value)}
+								placeholder="code 或 http://127.0.0.1:56121/callback?code=..."
+								autoComplete="off"
+							/>
+						</label>
+						<button type="submit" disabled={paste.trim().length === 0}>
+							提交授权码
+						</button>
+					</form>
+				</>
 			)}
 			{loginUrl !== undefined && (
 				<p>
@@ -261,7 +302,9 @@ export function XaiAccountsPanel() {
 				<p role="alert">
 					{loginState === "error"
 						? "添加账号失败"
-						: "系统浏览器打开失败，请点击授权链接"}
+						: loginState === "waiting"
+							? "提交授权码失败"
+							: "系统浏览器打开失败，请点击授权链接"}
 					：{loginError}
 				</p>
 			)}
