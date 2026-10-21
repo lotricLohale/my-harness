@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  pi-antigravity@0.9.0: 3dcb0fdd189f79932186b4748902ab4475ccf0e7384d491379bf74cba259d9c9
+  pi-antigravity@0.10.0: 419980d280d5a779a804fdbc1c0ed362ad1654f5d8505626c783c6695e3648d5
 
 importers:
 
@@ -79,8 +79,8 @@ importers:
         specifier: ~18.3.1
         version: 18.3.7(@types/react@18.3.31)
       pi-antigravity:
-        specifier: 0.9.0
-        version: 0.9.0(patch_hash=3dcb0fdd189f79932186b4748902ab4475ccf0e7384d491379bf74cba259d9c9)(@earendil-works/pi-ai@0.84.2(ws@8.21.3)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.2(ws@8.21.3)(zod@4.4.3))
+        specifier: 0.10.0
+        version: 0.10.0(patch_hash=419980d280d5a779a804fdbc1c0ed362ad1654f5d8505626c783c6695e3648d5)(@earendil-works/pi-ai@0.84.2(ws@8.21.3)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.2(ws@8.21.3)(zod@4.4.3))
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -1567,8 +1567,8 @@ packages:
     resolution: {integrity: sha512-3O/iVVsJAPsOnpwWIeD+d6z/7PmqApyQePUtCndjatj/9I5LylHvt5qluFaBT3I5h3r1ejfR056c+FCv+NnNXg==}
     engines: {node: 18 || 20 || >=22}
 
-  pi-antigravity@0.9.0:
-    resolution: {integrity: sha512-H9DJKCXbsdfVjAhiRsEmmtVd+VYcy+031x8TGToaX+MeSzUbJxE1tTIAi6ovqHVUdvhkJ9pFe+xRbdYXvl4lDg==}
+  pi-antigravity@0.10.0:
+    resolution: {integrity: sha512-tY8NFT38Iq7KtNnfFEoI34+y7tW1BZRk+LxqGEeAYsINmaVrXRub9GgcZV8EMbK5xBALCCoLNDq775yi4uCtQA==}
     engines: {node: '>=22.15.0'}
     peerDependencies:
       '@earendil-works/pi-ai': '>=0.80.0'
@@ -3265,7 +3265,7 @@ snapshots:
       lru-cache: 11.5.2
       minipass: 7.1.3
 
-  pi-antigravity@0.9.0(patch_hash=3dcb0fdd189f79932186b4748902ab4475ccf0e7384d491379bf74cba259d9c9)(@earendil-works/pi-ai@0.84.2(ws@8.21.3)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.2(ws@8.21.3)(zod@4.4.3)):
+  pi-antigravity@0.10.0(patch_hash=419980d280d5a779a804fdbc1c0ed362ad1654f5d8505626c783c6695e3648d5)(@earendil-works/pi-ai@0.84.2(ws@8.21.3)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.2(ws@8.21.3)(zod@4.4.3)):
     dependencies:
       '@earendil-works/pi-ai': 0.84.2(ws@8.21.3)(zod@4.4.3)
       '@earendil-works/pi-coding-agent': 0.84.2(ws@8.21.3)(zod@4.4.3)

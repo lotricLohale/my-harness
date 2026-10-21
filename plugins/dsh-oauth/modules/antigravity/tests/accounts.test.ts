@@ -91,6 +91,65 @@ test("有授权账号时才列出模型分组", async () => {
 	assert.equal(models[0]?.provider, "antigravity");
 });
 
+test("live catalog 会覆盖静态模型表", async () => {
+	const adapter = new AntigravityAdapter(
+		provider(() => okEvents()),
+		auth([{ id: "a", credentialRef: "A" }]),
+		{
+			refreshModels: async () => [
+				{
+					id: "gemini-4-argon",
+					name: "Gemini 4 Argon",
+					input: ["text", "image"],
+					contextWindow: 1_048_576,
+					maxTokens: 65_536,
+					reasoning: true,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+			],
+		},
+	);
+	const models = await adapter.listModels("antigravity");
+	assert.deepEqual(
+		models.map((model) => model.id),
+		["gemini-4-argon"],
+	);
+});
+
+test("live catalog 把 argon 思考档收成一条", async () => {
+	const adapter = new AntigravityAdapter(
+		provider(() => okEvents()),
+		auth([{ id: "a", credentialRef: "A" }]),
+		{
+			refreshModels: async () => [
+				{
+					id: "gemini-4-argon-medium",
+					name: "Gemini 4 Argon",
+					input: ["text", "image"],
+					contextWindow: 1_048_576,
+					maxTokens: 65_536,
+					reasoning: true,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+				{
+					id: "gemini-4-argon",
+					name: "Gemini 4 Argon",
+					input: ["text", "image"],
+					contextWindow: 1_048_576,
+					maxTokens: 65_536,
+					reasoning: true,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+			],
+		},
+	);
+	const models = await adapter.listModels("antigravity");
+	assert.deepEqual(
+		models.map((model) => model.id),
+		["gemini-4-argon"],
+	);
+});
+
 test("账号候选按启用、冷却和高优先级排序", () => {
 	const now = 1000;
 	assert.deepEqual(

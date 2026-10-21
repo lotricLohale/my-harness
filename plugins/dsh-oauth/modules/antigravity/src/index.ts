@@ -13,7 +13,7 @@ import { AntigravityAdapter } from "./adapter.js";
 import { AntigravityAuth, type AntigravityAccountMeta } from "./auth.js";
 import { registerCommands } from "./commands.js";
 import { registerWebRoutes } from "./server.js";
-import { loadUpstreamProvider } from "./upstream.js";
+import { loadUpstreamProvider, refreshUpstreamModels } from "./upstream.js";
 
 export const name = "llm-antigravity";
 export const inject = ["llm", "credentials", "commands", "settings"];
@@ -106,6 +106,7 @@ export function apply(ctx: Context, config: Config): void {
 	ctx.llm.registerAdapter(
 		[PROVIDER],
 		new AntigravityAdapter(provider, auth, {
+			refreshModels: refreshUpstreamModels,
 			resolveAttachments: () => ctx.get("attachments"),
 			resolveImageAccess: (attachments, ref) => {
 				const fs = ctx.get("fs");

@@ -19,10 +19,22 @@ diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
      });
  
      const { code, state: returnedState } = await acquireAuthCode(state, {
+diff --git a/src/client/client.ts b/src/client/client.ts
+--- a/src/client/client.ts
++++ b/src/client/client.ts
+@@ -61,7 +61,7 @@ export function endpointCandidates(): string[] {
+ }
+ 
+ const DEFAULT_USER_AGENT =
+-  "antigravity/cli/1.2.4 (aidev_client; os_type=linux; arch=amd64; cl=982146307; auth_method=consumer)";
++  "antigravity/cli/1.3.7 (aidev_client; os_type=linux; arch=amd64; cl=982146307; auth_method=consumer)";
+ 
+ /** Default User-Agent matching pure Antigravity CLI wire fingerprint. */
+ export function defaultUserAgent(): string {
 diff --git a/src/stream/stream.ts b/src/stream/stream.ts
 --- a/src/stream/stream.ts
 +++ b/src/stream/stream.ts
-@@ -1011,6 +1011,9 @@ export function friendlyAntigravityError(status: number | undefined, text: strin
+@@ -1015,6 +1015,9 @@ export function friendlyAntigravityError(status: number | undefined, text: strin
      if (/Request contains an invalid argument/i.test(msg)) {
        return `Antigravity rejected this request (${msg}). Next: retry once; if it keeps failing, switch models or re-login.`;
      }
@@ -32,7 +44,7 @@ diff --git a/src/stream/stream.ts b/src/stream/stream.ts
      return `Bad request from Antigravity. Next: retry once, then run /login antigravity if it keeps failing. Backend said: ${msg}`;
    }
    if (status === 401) {
-@@ -1484,17 +1487,25 @@ export function streamAntigravity(
+@@ -1533,17 +1536,25 @@ export function streamAntigravity(
  
            for (const endpoint of endpointCandidates()) {
              setLastEndpoint(endpoint);
@@ -72,7 +84,7 @@ diff --git a/src/stream/stream.ts b/src/stream/stream.ts
 diff --git a/src/utils/security.ts b/src/utils/security.ts
 --- a/src/utils/security.ts
 +++ b/src/utils/security.ts
-@@ -67,7 +67,17 @@ export function maskEmail(email: string | undefined): string | undefined {
+@@ -113,7 +113,17 @@ export function maskEmail(email: string | undefined): string | undefined {
    return `${maskedName}@${domain}`;
  }
  

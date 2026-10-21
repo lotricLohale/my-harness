@@ -7,6 +7,10 @@ import type {
   OAuthLoginCallbacks,
   SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import {
+  applyAntigravityCatalog,
+  discoverAntigravityModels,
+} from "./upstream-catalog.js";
 import registerAntigravity from "./upstream-runtime.js";
 import {
   fetchAccountUsage,
@@ -49,13 +53,23 @@ export interface AntigravityUsageSummary {
 }
 
 /**
- * 读取上游账号额度；pi-antigravity 未公开 package export，只能集中使用固定 0.9.0 的 src 子路径。
+ * 读取上游账号额度；pi-antigravity 未公开 package export，只能集中使用固定 0.10.0 的 src 子路径。
  */
 export async function fetchUpstreamUsage(
   apiKey: string,
 ): Promise<AntigravityUsageSummary> {
   const usage = await fetchAccountUsage(apiKey);
   return { groups: usage.groups };
+}
+
+/** Pull the live Antigravity catalog (Gemini 4 Argon if the account has it) and apply routing. */
+export async function refreshUpstreamModels(
+  apiKey: string,
+): Promise<AntigravityModelConfig[]> {
+  const discovered = await discoverAntigravityModels(apiKey);
+  if (discovered.models.length === 0) return [];
+  applyAntigravityCatalog(discovered);
+  return discovered.models as AntigravityModelConfig[];
 }
 
 export function loadUpstreamProvider(): AntigravityProvider {

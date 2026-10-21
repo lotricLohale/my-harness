@@ -25,7 +25,10 @@ import type {
 import type { AntigravityAccountMeta, AntigravityAuth } from "./auth.js";
 import { toPiContext } from "./context.js";
 import { toStreamChunks } from "./stream.js";
-import type { AntigravityProvider } from "./upstream.js";
+import type {
+	AntigravityModelConfig,
+	AntigravityProvider,
+} from "./upstream.js";
 
 export interface AntigravityAdapterOptions {
 	resolveAttachments?: () => AttachmentStore | undefined;
@@ -33,10 +36,33 @@ export interface AntigravityAdapterOptions {
 		attachments: AttachmentStore,
 		ref: ImageAttachmentRef,
 	) => { readonlyPath: string } | undefined;
+	refreshModels?: (apiKey: string) => Promise<readonly AntigravityModelConfig[]>;
 }
 
 function isModelVisible(chunk: StreamChunk): boolean {
 	return chunk.type !== "usage" && chunk.type !== "finish";
+}
+
+const THINKING_ID_SUFFIX =
+	/-(extra-low|extra-high|thinking|minimal|medium|high|low)$/i;
+
+function publicModelId(id: string): string {
+	return id.replace(THINKING_ID_SUFFIX, "");
+}
+
+/** Fold thinking-tier runtime ids into one picker row, e.g. gemini-4-argon + gemini-4-argon-medium. */
+function collapsePublicModels(
+	models: readonly AntigravityModelConfig[],
+): AntigravityModelConfig[] {
+	const collapsed = new Map<string, AntigravityModelConfig>();
+	for (const model of models) {
+		const id = publicModelId(model.id);
+		const previous = collapsed.get(id);
+		if (previous === undefined || model.id === id) {
+			collapsed.set(id, model.id === id ? model : { ...model, id });
+		}
+	}
+	return [...collapsed.values()];
 }
 
 function errorText(error: unknown): string {
@@ -71,6 +97,9 @@ function finishErrorMessage(chunk: StreamChunk): string | undefined {
 
 /** 把 pi-antigravity provider 接入 Harness LLM seam。 */
 export class AntigravityAdapter extends LlmAdapter {
+	private liveModels: readonly AntigravityModelConfig[] | undefined;
+	private liveModelsAt = 0;
+
 	constructor(
 		private readonly provider: AntigravityProvider,
 		private readonly auth: AntigravityAuth,
@@ -85,8 +114,9 @@ export class AntigravityAdapter extends LlmAdapter {
 
 	override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
 		this.assertProvider(provider);
-		if ((await this.auth.candidates()).length === 0) return [];
-		return this.provider.models.map((model) => ({
+		const accounts = await this.auth.candidates();
+		if (accounts.length === 0) return [];
+		return (await this.models(accounts[0])).map((model) => ({
 			provider,
 			id: model.id,
 			name: model.name,
@@ -167,7 +197,9 @@ export class AntigravityAdapter extends LlmAdapter {
 					resolveImageAccess: this.options?.resolveImageAccess,
 				}
 			: undefined;
-		const context = await toPiContext(options, imageContext);
+		const context = imageContext
+			? await toPiContext(options, imageContext)
+			: toPiContext(options);
 		let lastQuota: unknown;
 		for (let index = 0; index < accounts.length; index += 1) {
 			const account = accounts[index]!;
@@ -283,8 +315,38 @@ export class AntigravityAdapter extends LlmAdapter {
 		}
 	}
 
+	private async models(
+		account?: AntigravityAccountMeta,
+	): Promise<readonly AntigravityModelConfig[]> {
+		const refresh = this.options?.refreshModels;
+		const ttlMs = 5 * 60 * 1000;
+		if (
+			refresh === undefined ||
+			(this.liveModels !== undefined && Date.now() - this.liveModelsAt < ttlMs)
+		) {
+			return this.liveModels ?? this.provider.models;
+		}
+		const chosen = account ?? (await this.auth.candidates())[0];
+		if (chosen === undefined) return this.provider.models;
+		try {
+			const next = await refresh(await this.auth.apiKeyFor(chosen));
+			if (next.length > 0) {
+				this.liveModels = collapsePublicModels(next);
+				this.liveModelsAt = Date.now();
+				return this.liveModels;
+			}
+		} catch {
+			// Keep the last good / static catalog if live discovery fails.
+		}
+		return collapsePublicModels(this.liveModels ?? this.provider.models);
+	}
+
 	private model(id: string): Model<Api> {
-		const config = this.provider.models.find((model) => model.id === id);
+		const models = this.liveModels ?? this.provider.models;
+		const publicId = publicModelId(id);
+		const config = models.find(
+			(model) => model.id === id || model.id === publicId,
+		);
 		if (config === undefined) {
 			throw new LlmError(`Antigravity has no model "${id}"`, "UNKNOWN_MODEL");
 		}
