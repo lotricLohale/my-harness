@@ -1,8 +1,23 @@
-import type { ClientContext } from "@deepseek-ai/dsh-client-runtime/client";
+import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { OAuthModelsSection } from "./OAuthModelsSection.js";
 
 export const inject = ["slots"];
+
+type SlotsContext = ClientContext & {
+	slots: {
+		inject: (name: string, factory: () => unknown) => void;
+		register: (
+			options: {
+				name: string;
+				id: string;
+				order: number;
+				label: () => string;
+			},
+			component: unknown,
+		) => unknown;
+	};
+};
 
 /** 隐藏 UI 插件自带的检查更新按钮。 */
 function injectHideUpdateStyle(): () => void {
@@ -26,8 +41,9 @@ function injectHideUpdateStyle(): () => void {
 
 /** 注册统一的「模型（OAuth）」设置页。 */
 export function apply(ctx: ClientContext): void {
-	ctx.slots.inject("settings.section", () =>
-		ctx.slots.register(
+	const { slots } = ctx as SlotsContext;
+	slots.inject("settings.section", () =>
+		slots.register(
 			{
 				name: "settings.section",
 				id: "oauth-models",

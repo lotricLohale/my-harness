@@ -5,18 +5,17 @@ import type { XaiAuth } from "./auth.js";
 import type { XaiAccountPayload } from "./web-data.js";
 
 const ACCOUNTS_PATH = "/api/xai/accounts";
-const ACCOUNT_PATH_PREFIX = "/api/xai/accounts/";
+const DELETE_PATH = "/api/xai/accounts/delete";
 const LOGIN_PATH = "/api/xai/login";
 const LOGIN_COMPLETE_PATH = "/api/xai/login/complete";
 
-interface WebRoute {
-	kind: "exact" | "prefix";
-	path: string;
-	handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
-}
-
-interface WebServerLike {
-	register(route: WebRoute): () => void;
+interface ConnectionFetch {
+	register(route: {
+		path: string;
+		methods: readonly ("GET" | "HEAD" | "POST")[];
+		requestBody: "buffered" | "streaming";
+		fetch: (request: Request) => Promise<Response>;
+	}): () => Promise<void>;
 }
 
 /** 打开系统浏览器。 */
@@ -46,6 +45,32 @@ export function writeJson(
 		"X-Content-Type-Options": "nosniff",
 	});
 	res.end(JSON.stringify(body));
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: {
+			"Content-Type": "application/json; charset=utf-8",
+			"Cache-Control": "no-store",
+			"X-Content-Type-Options": "nosniff",
+		},
+	});
+}
+
+async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
+	const text = (await request.text()).trim();
+	if (text.length === 0) return {};
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		throw new Error("invalid json body");
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("invalid json body");
+	}
+	return parsed as Record<string, unknown>;
 }
 
 /** 拒绝跨站请求。 */
@@ -78,161 +103,101 @@ export function assertSameOriginJson(
 	return assertSameOrigin(req);
 }
 
-/** 读空 JSON body；当前登录接口不需要参数，但仍要求 JSON。 */
-async function readJson(req: IncomingMessage): Promise<unknown> {
-	const chunks: Buffer[] = [];
-	for await (const chunk of req)
-		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-	const text = Buffer.concat(chunks).toString("utf8").trim();
-	if (text.length === 0) return {};
-	try {
-		return JSON.parse(text);
-	} catch {
-		throw new Error("invalid json body");
-	}
-}
-
-/** 注册 xAI 同源管理接口，随 fiber 自动卸载。 */
+/** 注册 xAI 管理接口到 0.2.2 已鉴权的 /api Fetch 通道。 */
 export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
-	ctx.inject(["webServer"], (wctx) => {
-		// SAFETY: plugin SDK types lag core; webServer is injected at runtime.
-		const webServer = (wctx as unknown as { webServer: WebServerLike }).webServer;
-		const accountRoute: WebRoute = {
-			kind: "exact",
-			path: ACCOUNTS_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "GET") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const includeQuota =
-					new URL(req.url ?? ACCOUNTS_PATH, "http://localhost").searchParams.get(
-						"usage",
-					) !== "0";
-				writeJson(res, 200, {
-					accounts: (await auth.accountPayloads(
-						includeQuota,
-					)) satisfies XaiAccountPayload[],
-					loginPending: auth.loginPending(),
+	// SAFETY: plugin inject includes connection; this fiber already has ctx.connection.
+	const connection = (
+		ctx as unknown as { connection: { fetch: ConnectionFetch } }
+	).connection;
+	const register = (
+		path: string,
+		methods: readonly ("GET" | "HEAD" | "POST")[],
+		fetch: (request: Request) => Promise<Response>,
+	): void => {
+		ctx.effect(
+			() =>
+				connection.fetch.register({
+					path,
+					methods,
+					requestBody: "buffered",
+					fetch,
+				}),
+			`dsh-xai: ${path}`,
+		);
+	};
+
+		register(ACCOUNTS_PATH, ["GET"], async (request) => {
+			let includeQuota = true;
+			try {
+				includeQuota = new URL(request.url).searchParams.get("usage") !== "0";
+			} catch {
+				includeQuota = true;
+			}
+			return jsonResponse(200, {
+				accounts: (await auth.accountPayloads(
+					includeQuota,
+				)) satisfies XaiAccountPayload[],
+				loginPending: auth.loginPending(),
+			});
+		});
+
+		register(DELETE_PATH, ["POST"], async (request) => {
+			let id = "";
+			try {
+				const body = await readJsonObject(request);
+				id = typeof body.id === "string" ? body.id : "";
+			} catch {
+				return jsonResponse(400, { error: "invalid json body" });
+			}
+			if (id.length === 0 || id.includes("/")) {
+				return jsonResponse(404, { error: "account not found" });
+			}
+			try {
+				const removed = await auth.removeAccount(id);
+				return jsonResponse(200, { ok: true, id: removed.id });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return jsonResponse(/was not found/.test(message) ? 404 : 500, {
+					error: message,
 				});
-			},
-		};
-		const deleteRoute: WebRoute = {
-			kind: "prefix",
-			path: ACCOUNT_PATH_PREFIX,
-			handler: async (req, res) => {
-				if (req.method !== "DELETE") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const rejected = assertSameOrigin(req);
-				if (rejected !== undefined) {
-					writeJson(res, 403, { error: rejected });
-					return;
-				}
-				const pathname = new URL(req.url ?? ACCOUNT_PATH_PREFIX, "http://localhost")
-					.pathname;
-				if (!pathname.startsWith(ACCOUNT_PATH_PREFIX)) {
-					writeJson(res, 404, { error: "account not found" });
-					return;
-				}
-				const id = decodeURIComponent(
-					pathname.slice(ACCOUNT_PATH_PREFIX.length),
-				).replace(/\/$/, "");
-				if (id.length === 0 || id.includes("/")) {
-					writeJson(res, 404, { error: "account not found" });
-					return;
-				}
+			}
+		});
+
+		register(LOGIN_PATH, ["POST"], async () => {
+			try {
+				const attempt = await auth.beginLogin();
+				void attempt.completion.catch(() => undefined);
+				let browserError: string | undefined;
 				try {
-					const removed = await auth.removeAccount(id);
-					writeJson(res, 200, { ok: true, id: removed.id });
+					await openBrowser(attempt.url);
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					writeJson(res, /was not found/.test(message) ? 404 : 500, {
-						error: message,
-					});
+					browserError =
+						error instanceof Error ? error.message : String(error);
 				}
-			},
-		};
-		const loginRoute: WebRoute = {
-			kind: "exact",
-			path: LOGIN_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "POST") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const rejected = assertSameOriginJson(req);
-				if (rejected !== undefined) {
-					writeJson(res, 415, { error: rejected });
-					return;
-				}
-				try {
-					await readJson(req);
-					const attempt = await auth.beginLogin();
-					void attempt.completion.catch(() => undefined);
-					let browserError: string | undefined;
-					try {
-						await openBrowser(attempt.url);
-					} catch (error) {
-						browserError = error instanceof Error ? error.message : String(error);
-					}
-					writeJson(res, 202, {
-						ok: true,
-						url: attempt.url,
-						instructions: attempt.instructions,
-						...(browserError === undefined ? {} : { browserError }),
-					});
-				} catch (error) {
-					writeJson(res, 500, {
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-			},
-		};
-		const completeRoute: WebRoute = {
-			kind: "exact",
-			path: LOGIN_COMPLETE_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "POST") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const rejected = assertSameOriginJson(req);
-				if (rejected !== undefined) {
-					writeJson(res, 415, { error: rejected });
-					return;
-				}
-				try {
-					const body = await readJson(req);
-					const paste =
-						typeof body === "object" &&
-						body !== null &&
-						"paste" in body &&
-						typeof (body as { paste?: unknown }).paste === "string"
-							? (body as { paste: string }).paste
-							: "";
-					auth.submitLoginPaste(paste);
-					writeJson(res, 202, { ok: true });
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					writeJson(res, /not waiting for a code/.test(message) ? 409 : 400, {
-						error: message,
-					});
-				}
-			},
-		};
-		ctx.effect(() => {
-			const disposeAccounts = webServer.register(accountRoute);
-			const disposeDelete = webServer.register(deleteRoute);
-			const disposeLogin = webServer.register(loginRoute);
-			const disposeComplete = webServer.register(completeRoute);
-			return () => {
-				disposeComplete();
-				disposeLogin();
-				disposeDelete();
-				disposeAccounts();
-			};
-		}, "dsh-xai: web routes");
-	});
+				return jsonResponse(202, {
+					ok: true,
+					url: attempt.url,
+					instructions: attempt.instructions,
+					...(browserError === undefined ? {} : { browserError }),
+				});
+			} catch (error) {
+				return jsonResponse(500, {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		});
+
+		register(LOGIN_COMPLETE_PATH, ["POST"], async (request) => {
+			try {
+				const body = await readJsonObject(request);
+				const paste = typeof body.paste === "string" ? body.paste : "";
+				auth.submitLoginPaste(paste);
+				return jsonResponse(202, { ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return jsonResponse(/not waiting for a code/.test(message) ? 409 : 400, {
+					error: message,
+				});
+			}
+		});
 }

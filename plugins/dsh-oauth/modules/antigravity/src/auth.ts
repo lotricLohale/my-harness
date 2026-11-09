@@ -9,6 +9,7 @@ import type {
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
+import { consumptionOrder, withConsumptionOrder } from "../../order.js";
 import { fetchUpstreamUsage, type AntigravityProvider } from "./upstream.js";
 import {
 	serializeQuotaGroups,
@@ -182,6 +183,20 @@ export class AntigravityAuth {
 		await this.storeAccounts(next);
 	}
 
+	/** 按给定 id 顺序重写优先级，第一项先消耗。 */
+	async reorderAccounts(orderedIds: readonly string[]): Promise<void> {
+		const current = this.currentAccounts();
+		const known = new Set(current.map((account) => account.id));
+		if (
+			orderedIds.length !== current.length ||
+			orderedIds.some((id) => !known.has(id)) ||
+			new Set(orderedIds).size !== orderedIds.length
+		) {
+			throw new Error("account order does not match the account pool");
+		}
+		await this.storeAccounts(withConsumptionOrder(current, orderedIds));
+	}
+
 	/** 启动一次登录并立即返回授权 URL；重复调用复用正在进行的登录。 */
 	async beginLogin(): Promise<LoginAttempt> {
 		if (this.loginTask !== undefined) {
@@ -228,7 +243,7 @@ export class AntigravityAuth {
 	): Promise<AntigravityAccountPayload[]> {
 		await this.includeLegacyCredential();
 		return Promise.all(
-			this.currentAccounts().map(async (account) => {
+			consumptionOrder(this.currentAccounts()).map(async (account) => {
 				const ref = credentialRef(account.credentialRef);
 				const info = await this.ctx.credentials.describe(ref);
 				let expires: string | undefined;

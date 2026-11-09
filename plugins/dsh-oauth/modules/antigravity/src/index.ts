@@ -8,6 +8,7 @@ import z from "@deepseek-ai/schemastery";
 import type {} from "@deepseek-ai/dsh-commands";
 import type {} from "@deepseek-ai/dsh-credentials";
 import type {} from "@deepseek-ai/dsh-llm";
+import type {} from "@deepseek-ai/dsh-settings";
 import { registerModelActivity } from "./activity.js";
 import { AntigravityAdapter } from "./adapter.js";
 import { AntigravityAuth, type AntigravityAccountMeta } from "./auth.js";
@@ -39,7 +40,7 @@ const AccountConfig: z<AntigravityAccountMeta> = z.object({
 });
 
 /** Loader 运行时配置校验。 */
-export const Config: z<Config> = z.object({
+export const Config = z.object({
 	credentialRef: z.string().default("ANTIGRAVITY_OAUTH"),
 	accounts: z.array(AccountConfig).default([]),
 });
@@ -70,30 +71,18 @@ export function apply(ctx: Context, config: Config): void {
 			},
 		]);
 	};
-	// SAFETY: plugin SDK types lag core; register() exists on ctx.settings at runtime.
-	const scope = (
-		ctx as unknown as {
-			settings: {
-				register: (
-					ns: never,
-					schema: z<Config>,
-					options: { base: Config },
-				) => {
-					get: () => Config;
-					update: (patch: Record<string, unknown>) => Promise<void>;
-					watch: (callback: (next: Config) => void) => () => void;
-				};
-			};
+	const entryId = (
+		ctx as Context & { fiber: { entry?: { options: { id?: string } } } }
+	).fiber.entry?.options.id;
+	auth.setConfigWriter(async (patch) => {
+		resolvedConfig = Config({ ...resolvedConfig, ...patch });
+		if (entryId === undefined) return;
+		try {
+			await ctx.settings.update(entryId, { antigravity: resolvedConfig });
+		} catch (error) {
+			ctx.logger.warn(error);
 		}
-	).settings.register(NS, Config, { base: config });
-	resolvedConfig = scope.get();
-	auth.setConfigWriter((patch) => scope.update(patch));
-	ctx.effect(() =>
-		scope.watch((next) => {
-			resolvedConfig = next;
-			refreshDirectory();
-		}),
-	);
+	});
 	refreshDirectory();
 	void auth
 		.initialize()
@@ -103,6 +92,7 @@ export function apply(ctx: Context, config: Config): void {
 			ctx.logger.warn(error);
 		});
 	registerModelActivity(ctx);
+	registerWebRoutes(ctx, auth);
 	ctx.llm.registerAdapter(
 		[PROVIDER],
 		new AntigravityAdapter(provider, auth, {
@@ -122,7 +112,6 @@ export function apply(ctx: Context, config: Config): void {
 		}),
 	);
 	registerCommands(ctx, auth);
-	registerWebRoutes(ctx, auth);
 }
 
 export { AntigravityAdapter, isQuotaError } from "./adapter.js";

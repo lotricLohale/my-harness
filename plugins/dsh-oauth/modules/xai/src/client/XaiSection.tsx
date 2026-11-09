@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiJson } from "../../../api-fetch.js";
 import {
 	formatPercent,
 	shouldPollAfterLogin,
@@ -14,11 +15,7 @@ interface AccountsState {
 
 async function loadAccounts(includeQuota = true): Promise<XaiAccountsResponse> {
 	const path = includeQuota ? "/api/xai/accounts" : "/api/xai/accounts?usage=0";
-	const res = await fetch(path, { headers: { Accept: "application/json" } });
-	const body = (await res.json()) as Partial<XaiAccountsResponse> & {
-		error?: string;
-	};
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+	const body = await apiJson<Partial<XaiAccountsResponse>>(path);
 	return {
 		accounts: Array.isArray(body.accounts) ? body.accounts : [],
 		loginPending: body.loginPending === true,
@@ -26,37 +23,31 @@ async function loadAccounts(includeQuota = true): Promise<XaiAccountsResponse> {
 }
 
 async function deleteAccount(id: string): Promise<void> {
-	const res = await fetch(`/api/xai/accounts/${encodeURIComponent(id)}`, {
-		method: "DELETE",
-		headers: { Accept: "application/json" },
+	await apiJson("/api/xai/accounts/delete", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ id }),
 	});
-	const body = (await res.json()) as { error?: string };
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
 }
 
 async function startLogin(): Promise<{ url?: string; browserError?: string }> {
-	const res = await fetch("/api/xai/login", {
-		method: "POST",
-		headers: { "Content-Type": "application/json", Accept: "application/json" },
-		body: "{}",
-	});
-	const body = (await res.json()) as {
-		error?: string;
-		url?: string;
-		browserError?: string;
-	};
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+	const body = await apiJson<{ url?: string; browserError?: string }>(
+		"/api/xai/login",
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "{}",
+		},
+	);
 	return { url: body.url, browserError: body.browserError };
 }
 
 async function completeLogin(paste: string): Promise<void> {
-	const res = await fetch("/api/xai/login/complete", {
+	await apiJson("/api/xai/login/complete", {
 		method: "POST",
-		headers: { "Content-Type": "application/json", Accept: "application/json" },
+		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ paste }),
 	});
-	const body = (await res.json()) as { error?: string };
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
 }
 
 function resetText(value: string | undefined): string {

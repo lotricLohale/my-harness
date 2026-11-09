@@ -22,6 +22,7 @@ import type {
 	Model,
 	ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
+import { autoRetryEnabled } from "../../auto-retry.js";
 import type { AntigravityAccountMeta, AntigravityAuth } from "./auth.js";
 import { toPiContext } from "./context.js";
 import { toStreamChunks } from "./stream.js";
@@ -226,7 +227,7 @@ export class AntigravityAdapter extends LlmAdapter {
 							if (
 								failure !== undefined &&
 								isTransientFetchError(failure) &&
-								fetchRetries < 1 &&
+								fetchRetries < (autoRetryEnabled() ? 2 : 1) &&
 								options.signal?.aborted !== true
 							) {
 								fetchRetries += 1;
@@ -249,7 +250,7 @@ export class AntigravityAdapter extends LlmAdapter {
 					if (
 						!yieldedVisible &&
 						isTransientFetchError(error) &&
-						fetchRetries < 1 &&
+						fetchRetries < (autoRetryEnabled() ? 2 : 1) &&
 						options.signal?.aborted !== true
 					) {
 						fetchRetries += 1;

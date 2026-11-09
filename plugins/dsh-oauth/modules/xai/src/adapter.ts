@@ -23,6 +23,7 @@ import type {
 import { openAIResponsesApi } from "@earendil-works/pi-ai/compat";
 import type { XaiAccountMeta, XaiAuth } from "./auth.js";
 import { toPiContext, type ImageBytesStore } from "./context.js";
+import { autoRetryEnabled } from "../../auto-retry.js";
 import { findXaiModel, KNOWN_XAI_MODELS } from "./models.js";
 import { toStreamChunks } from "./stream.js";
 
@@ -226,50 +227,75 @@ export class XaiAdapter extends LlmAdapter {
 		let lastQuota: unknown;
 		for (let index = 0; index < accounts.length; index += 1) {
 			const account = accounts[index]!;
-			let yieldedVisible = false;
 			let switched = false;
-			const pending: StreamChunk[] = [];
-			try {
-				for await (const chunk of this.streamWithAccount(
-					options,
-					account,
-					context,
-				)) {
-					if (!yieldedVisible) {
-						if (
-							chunk.type === "finish" &&
-							chunk.reason.kind === "error" &&
-							isQuotaError(chunk.reason.failure.message)
-						) {
-							lastQuota = chunk.reason.failure.message;
-							await this.auth.markExhausted(account);
-							switched = true;
-							break;
+			let autoRetries = 0;
+			retry: while (true) {
+				let yieldedVisible = false;
+				switched = false;
+				const pending: StreamChunk[] = [];
+				try {
+					for await (const chunk of this.streamWithAccount(
+						options,
+						account,
+						context,
+					)) {
+						if (!yieldedVisible) {
+							if (
+								chunk.type === "finish" &&
+								chunk.reason.kind === "error" &&
+								isQuotaError(chunk.reason.failure.message)
+							) {
+								lastQuota = chunk.reason.failure.message;
+								await this.auth.markExhausted(account);
+								switched = true;
+								break;
+							}
+							if (
+								chunk.type === "finish" &&
+								chunk.reason.kind === "error" &&
+								autoRetryEnabled() &&
+								autoRetries < 1 &&
+								options.signal?.aborted !== true
+							) {
+								autoRetries += 1;
+								continue retry;
+							}
+							if (!isModelVisible(chunk)) {
+								pending.push(chunk);
+								continue;
+							}
+							yieldedVisible = true;
+							for (const buffered of pending) yield buffered;
+							pending.length = 0;
 						}
-						if (!isModelVisible(chunk)) {
-							pending.push(chunk);
-							continue;
-						}
-						yieldedVisible = true;
-						for (const buffered of pending) yield buffered;
-						pending.length = 0;
+						yield chunk;
 					}
-					yield chunk;
+					if (switched) break;
+					for (const buffered of pending) yield buffered;
+					return;
+				} catch (error) {
+					if (
+						!yieldedVisible &&
+						autoRetryEnabled() &&
+						autoRetries < 1 &&
+						options.signal?.aborted !== true &&
+						!isQuotaError(error)
+					) {
+						autoRetries += 1;
+						continue;
+					}
+					if (!yieldedVisible && isQuotaError(error)) {
+						lastQuota = error;
+						await this.auth.markExhausted(account);
+						switched = true;
+						break;
+					}
+					throw error;
 				}
-				if (switched) {
-					if (index + 1 < accounts.length) continue;
-					break;
-				}
-				for (const buffered of pending) yield buffered;
-				return;
-			} catch (error) {
-				if (!yieldedVisible && isQuotaError(error)) {
-					lastQuota = error;
-					await this.auth.markExhausted(account);
-					if (index + 1 < accounts.length) continue;
-					break;
-				}
-				throw error;
+			}
+			if (switched) {
+				if (index + 1 < accounts.length) continue;
+				break;
 			}
 		}
 
