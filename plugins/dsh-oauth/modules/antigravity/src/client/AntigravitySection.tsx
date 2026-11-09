@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiJson } from "../../../api-fetch.js";
 import {
 	formatPercent,
 	shouldPollAfterLogin,
@@ -18,11 +19,7 @@ async function loadAccounts(
 	const path = includeQuota
 		? "/api/antigravity/accounts"
 		: "/api/antigravity/accounts?usage=0";
-	const res = await fetch(path, { headers: { Accept: "application/json" } });
-	const body = (await res.json()) as Partial<AntigravityAccountsResponse> & {
-		error?: string;
-	};
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+	const body = await apiJson<Partial<AntigravityAccountsResponse>>(path);
 	return {
 		accounts: Array.isArray(body.accounts) ? body.accounts : [],
 		loginPending: body.loginPending === true,
@@ -30,29 +27,22 @@ async function loadAccounts(
 }
 
 async function deleteAccount(id: string): Promise<void> {
-	const res = await fetch(
-		`/api/antigravity/accounts/${encodeURIComponent(id)}`,
-		{
-			method: "DELETE",
-			headers: { Accept: "application/json" },
-		},
-	);
-	const body = (await res.json()) as { error?: string };
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+	await apiJson("/api/antigravity/accounts/delete", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ id }),
+	});
 }
 
 async function startLogin(): Promise<{ url?: string; browserError?: string }> {
-	const res = await fetch("/api/antigravity/login", {
-		method: "POST",
-		headers: { "Content-Type": "application/json", Accept: "application/json" },
-		body: "{}",
-	});
-	const body = (await res.json()) as {
-		error?: string;
-		url?: string;
-		browserError?: string;
-	};
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+	const body = await apiJson<{ url?: string; browserError?: string }>(
+		"/api/antigravity/login",
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "{}",
+		},
+	);
 	return { url: body.url, browserError: body.browserError };
 }
 
@@ -242,14 +232,14 @@ export function AntigravityAccountsPanel() {
 		swapped[index] = neighbor;
 		swapped[next] = current;
 		setDeleteError(undefined);
-		const res = await fetch("/api/antigravity/accounts/order", {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Accept: "application/json" },
-			body: JSON.stringify({ ids: swapped }),
-		});
-		const body = (await res.json()) as { error?: string };
-		if (!res.ok) {
-			setDeleteError(body.error ?? `HTTP ${res.status}`);
+		try {
+			await apiJson("/api/antigravity/accounts/order", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ ids: swapped }),
+			});
+		} catch (error) {
+			setDeleteError(error instanceof Error ? error.message : String(error));
 			return;
 		}
 		await refresh(false);

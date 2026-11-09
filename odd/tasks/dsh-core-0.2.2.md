@@ -20,3 +20,4 @@ L1. 升到最新的核心
 L2. 升级对应的插件一起改了
 L3. Latest published core is npm `latest`/`next` `0.2.2-rc.1` (git tag `dsh-v0.2.2-rc.1`). No non-alpha/rc official tag exists; operator overrode the pin-to-stable rule for this bump.
 L4. Out of scope unless boot fails: `web-ui` (still v0.3.21 / 6bddd21a), leftover `plugins/dsh-antigravity|dsh-xai|dsh-claude-code`, `desktop/` tray WIP.
+L5. OAuth settings load failed with Safari "The string did not match the expected pattern" because DSH 0.2.2 /api admission returns plain "unauthorized"; routes now register on connection.fetch and the client sends credentials.

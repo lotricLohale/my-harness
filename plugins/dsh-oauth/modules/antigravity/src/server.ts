@@ -5,18 +5,17 @@ import type { AntigravityAuth } from "./auth.js";
 import type { AntigravityAccountPayload } from "./web-data.js";
 
 const ACCOUNTS_PATH = "/api/antigravity/accounts";
-const ACCOUNT_PATH_PREFIX = "/api/antigravity/accounts/";
+const DELETE_PATH = "/api/antigravity/accounts/delete";
 const LOGIN_PATH = "/api/antigravity/login";
 const ORDER_PATH = "/api/antigravity/accounts/order";
 
-interface WebRoute {
-	kind: "exact" | "prefix";
-	path: string;
-	handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
-}
-
-interface WebServerLike {
-	register(route: WebRoute): () => void;
+interface ConnectionFetch {
+	register(route: {
+		path: string;
+		methods: readonly ("GET" | "HEAD" | "POST")[];
+		requestBody: "buffered" | "streaming";
+		fetch: (request: Request) => Promise<Response>;
+	}): () => Promise<void>;
 }
 
 /** 打开系统浏览器。 */
@@ -46,6 +45,32 @@ export function writeJson(
 		"X-Content-Type-Options": "nosniff",
 	});
 	res.end(JSON.stringify(body));
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: {
+			"Content-Type": "application/json; charset=utf-8",
+			"Cache-Control": "no-store",
+			"X-Content-Type-Options": "nosniff",
+		},
+	});
+}
+
+async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
+	const text = (await request.text()).trim();
+	if (text.length === 0) return {};
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		throw new Error("invalid json body");
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("invalid json body");
+	}
+	return parsed as Record<string, unknown>;
 }
 
 /** 拒绝跨站请求。 */
@@ -78,162 +103,104 @@ export function assertSameOriginJson(
 	return assertSameOrigin(req);
 }
 
-/** 读空 JSON body；当前登录接口不需要参数，但仍要求 JSON。 */
-async function readJson(req: IncomingMessage): Promise<unknown> {
-	const chunks: Buffer[] = [];
-	for await (const chunk of req)
-		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-	const text = Buffer.concat(chunks).toString("utf8").trim();
-	if (text.length === 0) return {};
-	try {
-		return JSON.parse(text);
-	} catch {
-		throw new Error("invalid json body");
-	}
-}
-
-/** 注册 Antigravity 同源管理接口，随 fiber 自动卸载。 */
+/** 注册 Antigravity 管理接口到 0.2.2 已鉴权的 /api Fetch 通道。 */
 export function registerWebRoutes(ctx: Context, auth: AntigravityAuth): void {
-	ctx.inject(["webServer"], (wctx) => {
-		// SAFETY: plugin SDK types lag core; webServer is injected at runtime.
-		const webServer = (wctx as unknown as { webServer: WebServerLike }).webServer;
-		const accountRoute: WebRoute = {
-			kind: "exact",
-			path: ACCOUNTS_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "GET") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const includeQuota =
-					new URL(req.url ?? ACCOUNTS_PATH, "http://localhost").searchParams.get(
-						"usage",
-					) !== "0";
-				writeJson(res, 200, {
-					accounts: (await auth.accountPayloads(
-						includeQuota,
-					)) satisfies AntigravityAccountPayload[],
-					loginPending: auth.loginPending(),
+	ctx.inject(["connection"], (scope) => {
+		// SAFETY: plugin SDK types lag core; connection.fetch is on ctx at runtime.
+		const connection = (
+			scope as unknown as { connection: { fetch: ConnectionFetch } }
+		).connection;
+		const register = (
+			path: string,
+			methods: readonly ("GET" | "HEAD" | "POST")[],
+			fetch: (request: Request) => Promise<Response>,
+		): void => {
+			scope.effect(
+				() =>
+					connection.fetch.register({
+						path,
+						methods,
+						requestBody: "buffered",
+						fetch,
+					}),
+				`dsh-oauth: ${path}`,
+			);
+		};
+
+		register(ACCOUNTS_PATH, ["GET"], async (request) => {
+			let includeQuota = true;
+			try {
+				includeQuota = new URL(request.url).searchParams.get("usage") !== "0";
+			} catch {
+				includeQuota = true;
+			}
+			return jsonResponse(200, {
+				accounts: (await auth.accountPayloads(
+					includeQuota,
+				)) satisfies AntigravityAccountPayload[],
+				loginPending: auth.loginPending(),
+			});
+		});
+
+		register(DELETE_PATH, ["POST"], async (request) => {
+			let id = "";
+			try {
+				const body = await readJsonObject(request);
+				id = typeof body.id === "string" ? body.id : "";
+			} catch {
+				return jsonResponse(400, { error: "invalid json body" });
+			}
+			if (id.length === 0 || id.includes("/")) {
+				return jsonResponse(404, { error: "account not found" });
+			}
+			try {
+				const removed = await auth.removeAccount(id);
+				return jsonResponse(200, { ok: true, id: removed.id });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return jsonResponse(/was not found/.test(message) ? 404 : 500, {
+					error: message,
 				});
-			},
-		};
-		const deleteRoute: WebRoute = {
-			kind: "prefix",
-			path: ACCOUNT_PATH_PREFIX,
-			handler: async (req, res) => {
-				if (req.method !== "DELETE") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const rejected = assertSameOrigin(req);
-				if (rejected !== undefined) {
-					writeJson(res, 403, { error: rejected });
-					return;
-				}
-				const pathname = new URL(req.url ?? ACCOUNT_PATH_PREFIX, "http://localhost")
-					.pathname;
-				if (!pathname.startsWith(ACCOUNT_PATH_PREFIX)) {
-					writeJson(res, 404, { error: "account not found" });
-					return;
-				}
-				const id = decodeURIComponent(
-					pathname.slice(ACCOUNT_PATH_PREFIX.length),
-				).replace(/\/$/, "");
-				if (id.length === 0 || id.includes("/")) {
-					writeJson(res, 404, { error: "account not found" });
-					return;
-				}
+			}
+		});
+
+		register(LOGIN_PATH, ["POST"], async () => {
+			try {
+				const attempt = await auth.beginLogin();
+				void attempt.completion.catch(() => undefined);
+				let browserError: string | undefined;
 				try {
-					const removed = await auth.removeAccount(id);
-					writeJson(res, 200, { ok: true, id: removed.id });
+					await openBrowser(attempt.url);
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					writeJson(res, /was not found/.test(message) ? 404 : 500, {
-						error: message,
-					});
+					browserError =
+						error instanceof Error ? error.message : String(error);
 				}
-			},
-		};
-		const loginRoute: WebRoute = {
-			kind: "exact",
-			path: LOGIN_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "POST") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const rejected = assertSameOriginJson(req);
-				if (rejected !== undefined) {
-					writeJson(res, 415, { error: rejected });
-					return;
-				}
-				try {
-					await readJson(req);
-					const attempt = await auth.beginLogin();
-					void attempt.completion.catch(() => undefined);
-					let browserError: string | undefined;
-					try {
-						await openBrowser(attempt.url);
-					} catch (error) {
-						browserError = error instanceof Error ? error.message : String(error);
-					}
-					writeJson(res, 202, {
-						ok: true,
-						url: attempt.url,
-						instructions: attempt.instructions,
-						...(browserError === undefined ? {} : { browserError }),
-					});
-				} catch (error) {
-					writeJson(res, 500, {
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-			},
-		};
-		const orderRoute: WebRoute = {
-			kind: "exact",
-			path: ORDER_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "POST") {
-					writeJson(res, 405, { error: "method not allowed" });
-					return;
-				}
-				const rejected = assertSameOriginJson(req);
-				if (rejected !== undefined) {
-					writeJson(res, 415, { error: rejected });
-					return;
-				}
-				try {
-					const body = await readJson(req);
-					const ids =
-						typeof body === "object" &&
-						body !== null &&
-						"ids" in body &&
-						Array.isArray((body as { ids?: unknown }).ids)
-							? (body as { ids: unknown[] }).ids.filter(
-									(id): id is string => typeof id === "string",
-								)
-							: [];
-					await auth.reorderAccounts(ids);
-					writeJson(res, 200, { ok: true });
-				} catch (error) {
-					writeJson(res, 400, {
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-			},
-		};
-		ctx.effect(() => {
-			const disposeAccounts = webServer.register(accountRoute);
-			const disposeDelete = webServer.register(deleteRoute);
-			const disposeLogin = webServer.register(loginRoute);
-			const disposeOrder = webServer.register(orderRoute);
-			return () => {
-				disposeOrder();
-				disposeLogin();
-				disposeDelete();
-				disposeAccounts();
-			};
-		}, "dsh-antigravity: web routes");
+				return jsonResponse(202, {
+					ok: true,
+					url: attempt.url,
+					instructions: attempt.instructions,
+					...(browserError === undefined ? {} : { browserError }),
+				});
+			} catch (error) {
+				return jsonResponse(500, {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		});
+
+		register(ORDER_PATH, ["POST"], async (request) => {
+			try {
+				const body = await readJsonObject(request);
+				const ids = Array.isArray(body.ids)
+					? body.ids.filter((id): id is string => typeof id === "string")
+					: [];
+				await auth.reorderAccounts(ids);
+				return jsonResponse(200, { ok: true });
+			} catch (error) {
+				return jsonResponse(400, {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		});
 	});
 }
