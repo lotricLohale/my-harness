@@ -39,11 +39,26 @@ function statusText(mode: PonytailMode): string {
 
 /** 注册每轮规则注入、/ponytail 切档和打包 skill。 */
 export function apply(ctx: Context, config: Config): void {
-	const scope = ctx.settings.register(NS, Config, { base: config });
+	// SAFETY: plugin SDK types lag core; register() exists on ctx.settings at runtime.
+	const scope = (
+		ctx as unknown as {
+			settings: {
+				register: (
+					ns: string,
+					schema: z<Config>,
+					options: { base: Config },
+				) => {
+					get: () => Config;
+					update: (patch: Record<string, unknown>) => Promise<void>;
+					watch: (callback: (next: Config) => void) => () => void;
+				};
+			};
+		}
+	).settings.register(NS, Config, { base: config });
 	let mode: PonytailMode = parseStoredMode(scope.get().mode);
 
 	ctx.effect(() =>
-		scope.watch((next) => {
+		scope.watch((next: Config) => {
 			mode = parseStoredMode(next.mode);
 		}),
 	);

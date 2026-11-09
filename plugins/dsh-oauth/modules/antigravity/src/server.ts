@@ -7,6 +7,7 @@ import type { AntigravityAccountPayload } from "./web-data.js";
 const ACCOUNTS_PATH = "/api/antigravity/accounts";
 const ACCOUNT_PATH_PREFIX = "/api/antigravity/accounts/";
 const LOGIN_PATH = "/api/antigravity/login";
+const ORDER_PATH = "/api/antigravity/accounts/order";
 
 interface WebRoute {
 	kind: "exact" | "prefix";
@@ -56,8 +57,7 @@ export function assertSameOrigin(
 	const origin = req.headers.origin;
 	if (typeof origin === "string") {
 		const host = req.headers.host;
-		if (typeof host !== "string")
-			return "cross-origin requests are not allowed";
+		if (typeof host !== "string") return "cross-origin requests are not allowed";
 		try {
 			if (new URL(origin).host !== host)
 				return "cross-origin requests are not allowed";
@@ -95,8 +95,8 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 /** 注册 Antigravity 同源管理接口，随 fiber 自动卸载。 */
 export function registerWebRoutes(ctx: Context, auth: AntigravityAuth): void {
 	ctx.inject(["webServer"], (wctx) => {
-		const webServer = (wctx as unknown as { webServer: WebServerLike })
-			.webServer;
+		// SAFETY: plugin SDK types lag core; webServer is injected at runtime.
+		const webServer = (wctx as unknown as { webServer: WebServerLike }).webServer;
 		const accountRoute: WebRoute = {
 			kind: "exact",
 			path: ACCOUNTS_PATH,
@@ -106,10 +106,9 @@ export function registerWebRoutes(ctx: Context, auth: AntigravityAuth): void {
 					return;
 				}
 				const includeQuota =
-					new URL(
-						req.url ?? ACCOUNTS_PATH,
-						"http://localhost",
-					).searchParams.get("usage") !== "0";
+					new URL(req.url ?? ACCOUNTS_PATH, "http://localhost").searchParams.get(
+						"usage",
+					) !== "0";
 				writeJson(res, 200, {
 					accounts: (await auth.accountPayloads(
 						includeQuota,
@@ -131,10 +130,8 @@ export function registerWebRoutes(ctx: Context, auth: AntigravityAuth): void {
 					writeJson(res, 403, { error: rejected });
 					return;
 				}
-				const pathname = new URL(
-					req.url ?? ACCOUNT_PATH_PREFIX,
-					"http://localhost",
-				).pathname;
+				const pathname = new URL(req.url ?? ACCOUNT_PATH_PREFIX, "http://localhost")
+					.pathname;
 				if (!pathname.startsWith(ACCOUNT_PATH_PREFIX)) {
 					writeJson(res, 404, { error: "account not found" });
 					return;
@@ -150,8 +147,7 @@ export function registerWebRoutes(ctx: Context, auth: AntigravityAuth): void {
 					const removed = await auth.removeAccount(id);
 					writeJson(res, 200, { ok: true, id: removed.id });
 				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
+					const message = error instanceof Error ? error.message : String(error);
 					writeJson(res, /was not found/.test(message) ? 404 : 500, {
 						error: message,
 					});
@@ -179,8 +175,7 @@ export function registerWebRoutes(ctx: Context, auth: AntigravityAuth): void {
 					try {
 						await openBrowser(attempt.url);
 					} catch (error) {
-						browserError =
-							error instanceof Error ? error.message : String(error);
+						browserError = error instanceof Error ? error.message : String(error);
 					}
 					writeJson(res, 202, {
 						ok: true,
@@ -195,11 +190,46 @@ export function registerWebRoutes(ctx: Context, auth: AntigravityAuth): void {
 				}
 			},
 		};
+		const orderRoute: WebRoute = {
+			kind: "exact",
+			path: ORDER_PATH,
+			handler: async (req, res) => {
+				if (req.method !== "POST") {
+					writeJson(res, 405, { error: "method not allowed" });
+					return;
+				}
+				const rejected = assertSameOriginJson(req);
+				if (rejected !== undefined) {
+					writeJson(res, 415, { error: rejected });
+					return;
+				}
+				try {
+					const body = await readJson(req);
+					const ids =
+						typeof body === "object" &&
+						body !== null &&
+						"ids" in body &&
+						Array.isArray((body as { ids?: unknown }).ids)
+							? (body as { ids: unknown[] }).ids.filter(
+									(id): id is string => typeof id === "string",
+								)
+							: [];
+					await auth.reorderAccounts(ids);
+					writeJson(res, 200, { ok: true });
+				} catch (error) {
+					writeJson(res, 400, {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			},
+		};
 		ctx.effect(() => {
 			const disposeAccounts = webServer.register(accountRoute);
 			const disposeDelete = webServer.register(deleteRoute);
 			const disposeLogin = webServer.register(loginRoute);
+			const disposeOrder = webServer.register(orderRoute);
 			return () => {
+				disposeOrder();
 				disposeLogin();
 				disposeDelete();
 				disposeAccounts();

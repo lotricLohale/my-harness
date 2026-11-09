@@ -56,6 +56,18 @@ async function startLogin(): Promise<{ url?: string; browserError?: string }> {
 	return { url: body.url, browserError: body.browserError };
 }
 
+function openAuthUrl(url: string): void {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return;
+	}
+	if (parsed.protocol !== "https:" || parsed.hostname !== "accounts.google.com")
+		return;
+	window.open(parsed.href, "_blank", "noopener,noreferrer");
+}
+
 function resetText(value: string | undefined): string {
 	if (value === undefined) return "重置时间未知";
 	const time = Date.parse(value);
@@ -66,10 +78,16 @@ export function AccountCard({
 	account,
 	onDelete,
 	deleting,
+	order,
+	onMove,
+	canMoveDown,
 }: {
 	account: AntigravityAccountPayload;
 	onDelete: (id: string) => void;
 	deleting: boolean;
+	order?: number;
+	onMove?: (direction: -1 | 1) => void;
+	canMoveDown?: boolean;
 }) {
 	return (
 		<article
@@ -89,22 +107,37 @@ export function AccountCard({
 				}}
 			>
 				<h3 style={{ margin: "0 0 8px" }}>{account.email ?? account.id}</h3>
-				<button
-					type="button"
-					onClick={() => onDelete(account.id)}
-					disabled={deleting}
-				>
-					{deleting ? "删除中…" : "删除账号"}
-				</button>
+				<div style={{ display: "flex", gap: 8 }}>
+					{onMove !== undefined && (
+						<>
+							<button type="button" onClick={() => onMove(-1)} disabled={order === 1}>
+								上移
+							</button>
+							<button
+								type="button"
+								onClick={() => onMove(1)}
+								disabled={canMoveDown === false}
+							>
+								下移
+							</button>
+						</>
+					)}
+					<button
+						type="button"
+						onClick={() => onDelete(account.id)}
+						disabled={deleting}
+					>
+						{deleting ? "删除中…" : "删除账号"}
+					</button>
+				</div>
 			</div>
 			<p style={{ margin: 0 }}>
-				状态：{account.enabled ? "启用" : "停用"}；优先级：{account.priority}
-				；凭据：{account.configured ? "已配置" : "未配置"}
+				消耗顺序：{order ?? account.priority}；状态：
+				{account.enabled ? "启用" : "停用"}；凭据：
+				{account.configured ? "已配置" : "未配置"}
 			</p>
 			{account.expires !== undefined && (
-				<p style={{ margin: "6px 0 0" }}>
-					凭据过期：{resetText(account.expires)}
-				</p>
+				<p style={{ margin: "6px 0 0" }}>凭据过期：{resetText(account.expires)}</p>
 			)}
 			{account.exhaustedUntil !== undefined && (
 				<p style={{ margin: "6px 0 0" }}>
@@ -127,8 +160,7 @@ export function AccountCard({
 						{group.buckets.map((bucket) => (
 							<div key={`${group.displayName}:${bucket.displayName}`}>
 								<span>
-									{bucket.displayName}：
-									{formatPercent(bucket.remainingFraction)} 剩余
+									{bucket.displayName}：{formatPercent(bucket.remainingFraction)} 剩余
 								</span>
 								<small style={{ display: "block" }}>
 									重置：{resetText(bucket.resetTime)}
@@ -199,6 +231,30 @@ export function AntigravityAccountsPanel() {
 		};
 	}, [loginState]);
 
+	const onMove = async (index: number, direction: -1 | 1): Promise<void> => {
+		const ids = state.accounts.map((account) => account.id);
+		const next = index + direction;
+		if (next < 0 || next >= ids.length) return;
+		const swapped = [...ids];
+		const current = swapped[index];
+		const neighbor = swapped[next];
+		if (current === undefined || neighbor === undefined) return;
+		swapped[index] = neighbor;
+		swapped[next] = current;
+		setDeleteError(undefined);
+		const res = await fetch("/api/antigravity/accounts/order", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Accept: "application/json" },
+			body: JSON.stringify({ ids: swapped }),
+		});
+		const body = (await res.json()) as { error?: string };
+		if (!res.ok) {
+			setDeleteError(body.error ?? `HTTP ${res.status}`);
+			return;
+		}
+		await refresh(false);
+	};
+
 	const onDelete = async (id: string): Promise<void> => {
 		if (deletingId !== undefined) return;
 		setDeletingId(id);
@@ -232,8 +288,8 @@ export function AntigravityAccountsPanel() {
 		<section>
 			<h3 style={{ marginTop: 0 }}>Antigravity (OAuth)</h3>
 			<p>
-				账号、五小时/每周额度和授权状态。Token 只保存在 Host
-				credentials，不会发送到浏览器。
+				账号、五小时/每周额度和授权状态。靠前的账号先消耗，可用上移/下移调整。Token
+				只保存在 Host credentials，不会发送到浏览器。
 			</p>
 			<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
 				<button
@@ -256,7 +312,7 @@ export function AntigravityAccountsPanel() {
 			)}
 			{loginUrl !== undefined && (
 				<p>
-					<button type="button" onClick={() => window.open(loginUrl, "_blank")}>
+					<button type="button" onClick={() => openAuthUrl(loginUrl)}>
 						打开授权页面
 					</button>
 				</p>
@@ -277,10 +333,13 @@ export function AntigravityAccountsPanel() {
 			{state.status === "ready" && state.accounts.length === 0 && (
 				<p>还没有账号，请点击“添加账号”。</p>
 			)}
-			{state.accounts.map((account) => (
+			{state.accounts.map((account, index) => (
 				<AccountCard
 					key={account.id}
 					account={account}
+					order={index + 1}
+					canMoveDown={index + 1 < state.accounts.length}
+					onMove={(direction) => void onMove(index, direction)}
 					onDelete={(id) => void onDelete(id)}
 					deleting={deletingId === account.id}
 				/>

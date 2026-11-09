@@ -100,26 +100,21 @@ test("toPiContext: 正确将 tool-result 中的图片转换为 PiMessage ImageCo
 				},
 			},
 			{
-				role: "user",
+				role: "tool",
 				id: "result-msg" as never,
+				toolCallId: "call_123" as never,
 				content: [
+					{ type: "text", text: "image info" },
 					{
-						type: "tool-result",
-						toolCallId: "call_123" as never,
-						content: [
-							{ type: "text", text: "image info" },
-							{
-								type: "image",
-								attachment: {
-									attachmentId: "sha256:abc" as never,
-									mediaType: "image/png",
-									bytes: 14,
-									width: 100,
-									height: 100,
-									name: "test.png",
-								},
-							},
-						],
+						type: "image",
+						attachment: {
+							attachmentId: "sha256:abc" as never,
+							mediaType: "image/png",
+							bytes: 14,
+							width: 100,
+							height: 100,
+							name: "test.png",
+						},
 					},
 				],
 				source: { kind: "tool", callId: "call_123" as never },

@@ -1,7 +1,7 @@
 diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
 --- a/src/auth/oauth.ts
 +++ b/src/auth/oauth.ts
-@@ -149,7 +149,7 @@ function startCallbackServer(expectedState: string): Promise<CallbackServer> {
+@@ -149,7 +149,7 @@
        }
  
        res.writeHead(200, oauthCallbackHeaders());
@@ -10,7 +10,7 @@ diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
        finish(() => resolveCode({ code, state }));
      });
  
-@@ -340,7 +340,7 @@ export async function loginAntigravity(
+@@ -340,7 +340,7 @@
      callbacks.onAuth({
        url: `${AUTH_URL}?${authParams.toString()}`,
        instructions:
@@ -19,22 +19,10 @@ diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
      });
  
      const { code, state: returnedState } = await acquireAuthCode(state, {
-diff --git a/src/client/client.ts b/src/client/client.ts
---- a/src/client/client.ts
-+++ b/src/client/client.ts
-@@ -61,7 +61,7 @@ export function endpointCandidates(): string[] {
- }
- 
- const DEFAULT_USER_AGENT =
--  "antigravity/cli/1.2.4 (aidev_client; os_type=linux; arch=amd64; cl=982146307; auth_method=consumer)";
-+  "antigravity/cli/1.3.7 (aidev_client; os_type=linux; arch=amd64; cl=982146307; auth_method=consumer)";
- 
- /** Default User-Agent matching pure Antigravity CLI wire fingerprint. */
- export function defaultUserAgent(): string {
 diff --git a/src/stream/stream.ts b/src/stream/stream.ts
 --- a/src/stream/stream.ts
 +++ b/src/stream/stream.ts
-@@ -1015,6 +1015,9 @@ export function friendlyAntigravityError(status: number | undefined, text: strin
+@@ -1054,6 +1054,9 @@
      if (/Request contains an invalid argument/i.test(msg)) {
        return `Antigravity rejected this request (${msg}). Next: retry once; if it keeps failing, switch models or re-login.`;
      }
@@ -44,47 +32,10 @@ diff --git a/src/stream/stream.ts b/src/stream/stream.ts
      return `Bad request from Antigravity. Next: retry once, then run /login antigravity if it keeps failing. Backend said: ${msg}`;
    }
    if (status === 401) {
-@@ -1533,17 +1536,25 @@ export function streamAntigravity(
- 
-           for (const endpoint of endpointCandidates()) {
-             setLastEndpoint(endpoint);
--            response = await fetchWithHeaderDeadline(
--              `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
--              {
--                method: "POST",
--                headers: requestHeaders,
--                body,
--              },
--              opts.signal,
--              streamHeaderTimeoutMs(),
--              streamStallTimeoutMs(),
--            );
-+            try {
-+              response = await fetchWithHeaderDeadline(
-+                `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
-+                {
-+                  method: "POST",
-+                  headers: requestHeaders,
-+                  body,
-+                },
-+                opts.signal,
-+                streamHeaderTimeoutMs(),
-+                streamStallTimeoutMs(),
-+              );
-+            } catch (error) {
-+              if (opts.signal?.aborted) throw error;
-+              lastText = safeError(error);
-+              setLastError(lastText);
-+              response = undefined;
-+              continue;
-+            }
-             setLastStatus(response.status);
-             if (response.ok) break;
-             lastText = await response.text();
 diff --git a/src/utils/security.ts b/src/utils/security.ts
 --- a/src/utils/security.ts
 +++ b/src/utils/security.ts
-@@ -113,7 +113,17 @@ export function maskEmail(email: string | undefined): string | undefined {
+@@ -113,7 +113,17 @@
    return `${maskedName}@${domain}`;
  }
  

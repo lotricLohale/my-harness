@@ -2,7 +2,8 @@ import { contentHasImage, LlmError } from "@deepseek-ai/dsh-llm";
 import type {
 	ContentBlock,
 	GenerateOptions,
-	Message,
+	RequestMessage,
+	ToolResultMessage,
 } from "@deepseek-ai/dsh-llm";
 import type { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import type {
@@ -14,7 +15,6 @@ import type {
 } from "@earendil-works/pi-ai";
 import { toPiAssistant } from "./replay.js";
 
-const DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048;
 const DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024;
 
 /** Plugin SDK types lag core; runtime store may also expose readImageRequest. */
@@ -25,7 +25,7 @@ export interface ImageBytesStore {
 	): Promise<{ data: Uint8Array; mediaType?: string }>;
 	readImageRequest?(
 		ref: ImageAttachmentRef,
-		policy: { maxPixels: number; maxBytes: number },
+		target: { width: number; height: number; maxBytes: number },
 		signal?: AbortSignal,
 	): Promise<{ data: Uint8Array; mediaType: string }>;
 	imageHostPath?(ref: ImageAttachmentRef): string | undefined;
@@ -39,23 +39,15 @@ export interface PiImageRequestContext {
 	) => { readonlyPath: string } | undefined;
 }
 
-function flattenText(message: Message): string {
+function flattenText(message: { content: readonly ContentBlock[] }): string {
 	return message.content
 		.filter((block) => block.type === "text")
 		.map((block) => block.text)
 		.join("");
 }
 
-function resultText(blocks: readonly ContentBlock[]): string {
-	return blocks
-		.map((block) =>
-			block.type === "text"
-				? block.text
-				: block.type === "tool-result"
-					? resultText(block.content)
-					: "",
-		)
-		.join("");
+function isToolResult(message: RequestMessage): message is ToolResultMessage {
+	return message.role === "tool";
 }
 
 function toolsOf(options: GenerateOptions): PiTool[] | undefined {
@@ -88,7 +80,8 @@ async function prepareImage(
 			const request = await attachments.readImageRequest(
 				ref,
 				{
-					maxPixels: DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
+					width: ref.width,
+					height: ref.height,
 					maxBytes: DEFAULT_REQUEST_IMAGE_MAX_BYTES,
 				},
 				signal,
@@ -148,16 +141,6 @@ async function processBlocks(
 				}
 				break;
 			}
-			case "tool-result": {
-				const nested = await processBlocks(
-					block.content,
-					attachments,
-					resolveImageAccess,
-					signal,
-				);
-				result.push(...nested);
-				break;
-			}
 			default:
 				break;
 		}
@@ -169,12 +152,6 @@ function textOnlyContext(options: GenerateOptions): PiContext {
 	const toolNames = new Map<string, string>();
 	const messages: PiMessage[] = [];
 	for (const message of options.messages) {
-		if (contentHasImage(message.content)) {
-			throw new LlmError(
-				"xAI image input requires the durable attachment service",
-				"UNSUPPORTED_CONTENT",
-			);
-		}
 		if (message.role === "assistant") {
 			const assistant = toPiAssistant(message);
 			for (const block of assistant.content) {
@@ -183,25 +160,26 @@ function textOnlyContext(options: GenerateOptions): PiContext {
 			messages.push(assistant);
 			continue;
 		}
-		const text = flattenText(message);
-		const results = message.content.filter(
-			(block) => block.type === "tool-result",
-		);
-		if (text.length > 0 || results.length === 0) {
-			messages.push({ role: "user", content: text, timestamp: 0 });
-		}
-		for (const result of results) {
+		if (isToolResult(message)) {
 			messages.push({
 				role: "toolResult",
-				toolCallId: result.toolCallId,
-				toolName: toolNames.get(result.toolCallId) ?? "unknown",
+				toolCallId: message.toolCallId,
+				toolName: toolNames.get(message.toolCallId) ?? "unknown",
 				content: [
-					{ type: "text", text: resultText(result.content) || "(no output)" },
+					{ type: "text", text: flattenText(message) || "(no output)" },
 				],
-				isError: result.isError ?? false,
+				isError: message.isError ?? false,
 				timestamp: 0,
 			});
+			continue;
 		}
+		if (contentHasImage(message.content)) {
+			throw new LlmError(
+				"xAI image input requires the durable attachment service",
+				"UNSUPPORTED_CONTENT",
+			);
+		}
+		messages.push({ role: "user", content: flattenText(message), timestamp: 0 });
 	}
 	const tools = toolsOf(options);
 	return {
@@ -228,40 +206,9 @@ async function toPiContextWithImages(
 			messages.push(assistant);
 			continue;
 		}
-		if (message.role === "system") {
-			messages.push({
-				role: "user",
-				content: flattenText(message),
-				timestamp: 0,
-			});
-			continue;
-		}
-
-		const regular = message.content.filter(
-			(block) => block.type !== "tool-result",
-		);
-		const processedRegular = await processBlocks(
-			regular,
-			attachments,
-			resolveImageAccess,
-			options.signal,
-		);
-		const results = message.content.filter(
-			(block) => block.type === "tool-result",
-		);
-
-		if (processedRegular.every((b) => b.type === "text")) {
-			const text = processedRegular.map((b) => b.text).join("");
-			if (text.length > 0 || results.length === 0) {
-				messages.push({ role: "user", content: text, timestamp: 0 });
-			}
-		} else {
-			messages.push({ role: "user", content: processedRegular, timestamp: 0 });
-		}
-
-		for (const result of results) {
+		if (isToolResult(message)) {
 			const processed = await processBlocks(
-				result.content,
+				message.content,
 				attachments,
 				resolveImageAccess,
 				options.signal,
@@ -279,12 +226,37 @@ async function toPiContextWithImages(
 					];
 			messages.push({
 				role: "toolResult",
-				toolCallId: result.toolCallId,
-				toolName: toolNames.get(result.toolCallId) ?? "unknown",
+				toolCallId: message.toolCallId,
+				toolName: toolNames.get(message.toolCallId) ?? "unknown",
 				content,
-				isError: result.isError ?? false,
+				isError: message.isError ?? false,
 				timestamp: 0,
 			});
+			continue;
+		}
+		if (message.role === "system" || message.role === "developer") {
+			messages.push({
+				role: "user",
+				content: flattenText(message),
+				timestamp: 0,
+			});
+			continue;
+		}
+
+		const processedRegular = await processBlocks(
+			message.content,
+			attachments,
+			resolveImageAccess,
+			options.signal,
+		);
+		if (processedRegular.every((b) => b.type === "text")) {
+			messages.push({
+				role: "user",
+				content: processedRegular.map((b) => b.text).join(""),
+				timestamp: 0,
+			});
+		} else {
+			messages.push({ role: "user", content: processedRegular, timestamp: 0 });
 		}
 	}
 

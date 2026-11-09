@@ -90,7 +90,15 @@ function foreignAssistant(message: Message): AssistantMessage {
   }
 }
 
+function replayPayload(raw: unknown): unknown {
+  if (typeof raw === 'object' && raw !== null && 'response' in raw && !('kind' in raw)) {
+    return (raw as { response: unknown }).response
+  }
+  return raw
+}
+
 function replayedAssistant(message: Message, source: ModelMessageSource, raw: unknown): AssistantMessage {
+  raw = replayPayload(raw)
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return foreignAssistant(message)
   const state = raw as Partial<AntigravityReplayState>
   if (state.kind !== 'antigravity-pi-ai' || state.version !== 1
