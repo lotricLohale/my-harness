@@ -41,7 +41,7 @@ const AccountConfig: z<XaiAccountMeta> = z.object({
 });
 
 /** Loader 运行时配置校验。 */
-export const Config: z<Config> = z.object({
+export const Config = z.object({
 	credentialRef: z.string().default("XAI_OAUTH"),
 	accounts: z.array(AccountConfig).default([]),
 });
@@ -75,7 +75,11 @@ export function apply(ctx: Context, config: Config): void {
 	auth.setConfigWriter(async (patch) => {
 		resolvedConfig = Config({ ...resolvedConfig, ...patch });
 		if (entryId === undefined) return;
-		await ctx.settings.update(entryId, { xai: resolvedConfig });
+		try {
+			await ctx.settings.update(entryId, { xai: resolvedConfig });
+		} catch (error) {
+			ctx.logger.warn(error);
+		}
 	});
 	refreshDirectory();
 	void auth

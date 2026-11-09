@@ -25,10 +25,10 @@ export interface Config {
 	mode?: PonytailMode;
 }
 
-export const Config: z<Config> = z.object({
+export const Config = z.object({
 	mode: z
 		.union(PONYTAIL_MODES.map((mode) => z.const(mode)))
-		.default(DEFAULT_MODE),
+		.default(DEFAULT_MODE)
 });
 
 function statusText(mode: PonytailMode): string {
