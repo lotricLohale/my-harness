@@ -14,7 +14,7 @@ use std::{
 use tauri::{
     AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder,
     image::Image,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{TrayIcon, TrayIconBuilder},
 };
 
@@ -27,6 +27,7 @@ struct HarnessProcess {
     update_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     pending_updates: AtomicU8,
     open_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
+    retry_menu: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
     quit_menu: Mutex<Option<MenuItem<tauri::Wry>>>,
     tray: Mutex<Option<TrayIcon<tauri::Wry>>>,
     quitting: AtomicBool,
@@ -64,8 +65,12 @@ fn project_root() -> PathBuf {
 }
 
 fn free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|error| error.to_string())?;
-    listener.local_addr().map(|address| address.port()).map_err(|error| error.to_string())
+    let listener =
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|error| error.to_string())?;
+    listener
+        .local_addr()
+        .map(|address| address.port())
+        .map_err(|error| error.to_string())
 }
 
 fn set_harness_status(state: &HarnessProcess, status: &str) {
@@ -80,16 +85,22 @@ fn set_harness_status(state: &HarnessProcess, status: &str) {
         _ => "已停止",
     };
     if let Ok(menu) = state.status_menu.lock()
-        && let Some(menu) = menu.as_ref() {
-            let _ = menu.set_text(format!("状态：{label}"));
-        }
+        && let Some(menu) = menu.as_ref()
+    {
+        let _ = menu.set_text(format!("状态：{label}"));
+    }
     if let Ok(tray) = state.tray.lock()
-        && let Some(tray) = tray.as_ref() {
-            let _ = tray.set_icon_with_as_template(
-                Some(Image::new_owned(h_icon_rgba(status == "ready", false, None), 48, 48)),
-                false,
-            );
-        }
+        && let Some(tray) = tray.as_ref()
+    {
+        let _ = tray.set_icon_with_as_template(
+            Some(Image::new_owned(
+                h_icon_rgba(status == "ready", false, None),
+                48,
+                48,
+            )),
+            false,
+        );
+    }
 }
 
 fn start_harness(app: &AppHandle) -> Result<(), String> {
@@ -123,9 +134,10 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
     *state.url.lock().map_err(|_| "URL 锁已损坏")? = Some(url.clone());
     set_harness_status(&state, "starting");
     if let Ok(menu) = state.port_menu.lock()
-        && let Some(menu) = menu.as_ref() {
-            let _ = menu.set_text(format!("端口：{port}"));
-        }
+        && let Some(menu) = menu.as_ref()
+    {
+        let _ = menu.set_text(format!("端口：{port}"));
+    }
 
     let handle = app.clone();
     if let Some(stdout) = stdout {
@@ -138,10 +150,20 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
                 if let Some(pos) = line.find("dsh web: ") {
                     let part = &line[pos + "dsh web: ".len()..];
                     let clean_url = part.split_whitespace().next().unwrap_or(part);
+                    if !clean_url.contains("token=") {
+                        continue;
+                    }
                     let state = handle_for_stdout.state::<HarnessProcess>();
                     if let Ok(mut current) = state.url.lock() {
                         *current = Some(clean_url.to_string());
                     }
+                    set_harness_status(&state, "ready");
+                    let handle_for_nav = handle_for_stdout.clone();
+                    let _ = handle_for_stdout.run_on_main_thread(move || {
+                        if let Err(error) = show_harness(&handle_for_nav) {
+                            eprintln!("自动打开 Harness 窗口失败：{error}");
+                        }
+                    });
                 }
             }
         });
@@ -160,37 +182,37 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
             thread::sleep(Duration::from_millis(250));
         };
         let state = handle.state::<HarnessProcess>();
-        set_harness_status(&state, if ready { "ready" } else { "failed" });
-        if ready {
-            let auth_deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < auth_deadline {
-                let has_token = state
-                    .url
-                    .lock()
-                    .ok()
-                    .and_then(|u| u.clone())
-                    .map(|u| u.contains("token="))
-                    .unwrap_or(false);
-                if has_token {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-            if let Some(window) = handle.get_webview_window("harness") {
-                let url = state.url.lock().ok().and_then(|url| url.clone());
-                if let Some(url) = url
-                    && let Ok(url) = url.parse() {
-                        let _ = window.navigate(url);
-                    }
-            } else {
-                let handle_main = handle.clone();
-                let _ = handle.run_on_main_thread(move || {
-                    if let Err(e) = show_harness(&handle_main) {
-                        eprintln!("自动打开 Harness 窗口失败：{e}");
-                    }
-                });
-            }
+        if !ready {
+            set_harness_status(&state, "failed");
+            return;
         }
+        // The listen socket opens before dsh prints the token URL.
+        let auth_deadline = Instant::now() + Duration::from_secs(90);
+        let mut has_token = false;
+        while Instant::now() < auth_deadline {
+            has_token = state
+                .url
+                .lock()
+                .ok()
+                .and_then(|u| u.clone())
+                .is_some_and(|u| u.contains("token="));
+            if has_token {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !has_token {
+            set_harness_status(&state, "failed");
+            eprintln!("dsh web 未在 90 秒内打印带 token 的地址");
+            return;
+        }
+        set_harness_status(&state, "ready");
+        let handle_main = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            if let Err(e) = show_harness(&handle_main) {
+                eprintln!("自动打开 Harness 窗口失败：{e}");
+            }
+        });
     });
     Ok(())
 }
@@ -199,13 +221,15 @@ fn start_harness(app: &AppHandle) -> Result<(), String> {
 fn harness_status(state: State<'_, HarnessProcess>) -> Result<HarnessStatus, String> {
     let mut status = state.status.lock().map_err(|_| "状态锁已损坏")?;
     if let Some(child) = state.child.lock().map_err(|_| "子进程锁已损坏")?.as_mut()
-        && let Some(exit) = child.try_wait().map_err(|error| error.to_string())? {
-            *status = format!("exited ({exit})");
-            if let Ok(menu) = state.status_menu.lock()
-                && let Some(menu) = menu.as_ref() {
-                    let _ = menu.set_text("状态：已退出");
-                }
+        && let Some(exit) = child.try_wait().map_err(|error| error.to_string())?
+    {
+        *status = format!("exited ({exit})");
+        if let Ok(menu) = state.status_menu.lock()
+            && let Some(menu) = menu.as_ref()
+        {
+            let _ = menu.set_text("状态：已退出");
         }
+    }
     Ok(HarnessStatus {
         status: status.clone(),
         url: state.url.lock().map_err(|_| "URL 锁已损坏")?.clone(),
@@ -230,32 +254,36 @@ fn set_app_icon() -> Result<(), String> {
 fn show_harness(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<HarnessProcess>();
     let status = state.status.lock().map_err(|_| "状态锁已损坏")?.clone();
-    if status != "ready" {
-        return Err(format!("Harness 尚未就绪：{status}"));
-    }
-    #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Regular)
-        .map_err(|error| error.to_string())?;
-
-    if let Some(window) = app.get_webview_window("harness") {
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
-    }
     let url = state
         .url
         .lock()
         .map_err(|_| "URL 锁已损坏")?
         .clone()
         .ok_or("Harness URL 不存在")?;
-        let window = WebviewWindowBuilder::new(
-            app,
-            "harness",
-            WebviewUrl::External(url.parse().map_err(|error| format!("无效 URL：{error}"))?),
-        )
-        .title("MDSH")
-        .inner_size(1280.0, 860.0)
-        .initialization_script(
-            r#"
+    if !url.contains("token=") {
+        return Err(format!("Harness 尚未就绪：{status}"));
+    }
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Regular)
+        .map_err(|error| error.to_string())?;
+
+    let parsed = url.parse().map_err(|error| format!("无效 URL：{error}"))?;
+    if let Some(window) = app.get_webview_window("harness") {
+        window.show().map_err(|error| error.to_string())?;
+        let _ = window.unminimize();
+        window.navigate(parsed).map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(
+        app,
+        "harness",
+        WebviewUrl::External(url.parse().map_err(|error| format!("无效 URL：{error}"))?),
+    )
+    .title("MDSH")
+    .inner_size(1280.0, 860.0)
+    .initialization_script(
+        r#"
             (function() {
                 const style = document.createElement('style');
                 style.setAttribute('data-mdsh-hide-update-trigger', '');
@@ -270,9 +298,9 @@ fn show_harness(app: &AppHandle) -> Result<(), String> {
                 (document.head || document.documentElement).appendChild(style);
             })();
             "#,
-        )
-        .build()
-        .map_err(|error| error.to_string())?;
+    )
+    .build()
+    .map_err(|error| error.to_string())?;
     #[cfg(target_os = "macos")]
     set_app_icon()?;
     window.set_focus().map_err(|error| error.to_string())?;
@@ -290,10 +318,26 @@ fn h_icon_rgba(core_ready: bool, request_error: bool, orbit_frame: Option<usize>
     const RED: [u8; 4] = [255, 69, 58, 255];
     const CYAN: [u8; 4] = [0, 200, 255, 255];
     const EDGE: [(usize, usize); 20] = [
-        (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5),
-        (1, 5), (2, 5), (3, 5), (4, 5), (5, 5), (5, 4),
-        (5, 3), (5, 2), (5, 1), (5, 0), (4, 0), (3, 0),
-        (2, 0), (1, 0),
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (0, 5),
+        (1, 5),
+        (2, 5),
+        (3, 5),
+        (4, 5),
+        (5, 5),
+        (5, 4),
+        (5, 3),
+        (5, 2),
+        (5, 1),
+        (5, 0),
+        (4, 0),
+        (3, 0),
+        (2, 0),
+        (1, 0),
     ];
     let mut rgba = vec![0; 48 * 48 * 4];
     let center = if core_ready { GREEN } else { WHITE };
@@ -344,7 +388,10 @@ fn paint_area(rgba: &mut [u8], top: usize, left: usize, color: [u8; 4]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{available_updates, h_icon_rgba, summarize_updates, today_date, visible_usage_rows, UpdateStatus};
+    use super::{
+        UpdateStatus, available_updates, h_icon_rgba, summarize_updates, today_date,
+        visible_usage_rows,
+    };
 
     #[test]
     fn status_icon_is_a_block_h() {
@@ -372,9 +419,7 @@ mod tests {
     #[test]
     fn today_usage_hides_zero_and_stale_dates() {
         let today = today_date();
-        let raw = format!(
-r#"{{"date":"{today}","models":{{"flash":12,"empty":0,"grok":3}}}}"#
-        );
+        let raw = format!(r#"{{"date":"{today}","models":{{"flash":12,"empty":0,"grok":3}}}}"#);
         let rows = visible_usage_rows(&raw, &today);
         assert_eq!(rows, vec![("flash".into(), 12), ("grok".into(), 3)]);
         assert!(visible_usage_rows(&raw, "1999-01-01").is_empty());
@@ -382,25 +427,25 @@ r#"{{"date":"{today}","models":{{"flash":12,"empty":0,"grok":3}}}}"#
 
     fn status(update_available: bool) -> UpdateStatus {
         UpdateStatus {
-current: "a".into(),
-latest: "b".into(),
-update_available,
+            current: "a".into(),
+            latest: "b".into(),
+            update_available,
         }
     }
 
     #[test]
     fn combined_update_label_covers_both_repos() {
         assert_eq!(
-summarize_updates(Ok(status(true)), Ok(status(true))),
-"发现核心和 UI 更新",
+            summarize_updates(Ok(status(true)), Ok(status(true))),
+            "发现核心和 UI 更新",
         );
         assert_eq!(
-summarize_updates(Ok(status(false)), Ok(status(false))),
-"已是最新",
+            summarize_updates(Ok(status(false)), Ok(status(false))),
+            "已是最新",
         );
         assert_eq!(
-summarize_updates(Err("x".into()), Ok(status(true))),
-"发现 UI 库更新（核心检查失败）",
+            summarize_updates(Err("x".into()), Ok(status(true))),
+            "发现 UI 库更新（核心检查失败）",
         );
         assert_eq!(available_updates(&Ok(status(true)), &Ok(status(false))), 1);
         assert_eq!(available_updates(&Ok(status(true)), &Ok(status(true))), 3);
@@ -447,12 +492,30 @@ fn visible_usage_rows(raw: &str, today: &str) -> Vec<(String, u64)> {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|(name, value)| {
-let tokens = value.floor() as u64;
-(tokens > 0).then_some((name, tokens))
+            let tokens = value.floor() as u64;
+            (tokens > 0).then_some((name, tokens))
         })
         .collect();
     rows.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     rows
+}
+
+fn auto_retry_path() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".dsh/mdsh-auto-retry")
+}
+
+fn read_auto_retry() -> bool {
+    std::fs::read_to_string(auto_retry_path())
+        .ok()
+        .is_some_and(|text| text.trim() == "1")
+}
+
+fn write_auto_retry(enabled: bool) {
+    let path = auto_retry_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, if enabled { "1\n" } else { "0\n" });
 }
 
 fn format_tokens(tokens: u64) -> String {
@@ -460,7 +523,7 @@ fn format_tokens(tokens: u64) -> String {
     let mut out = String::new();
     for (index, ch) in text.chars().rev().enumerate() {
         if index > 0 && index % 3 == 0 {
-out.push(',');
+            out.push(',');
         }
         out.push(ch);
     }
@@ -472,6 +535,15 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let port = MenuItem::with_id(app, "port", "端口：--", false, None::<&str>)?;
     let status_separator = PredefinedMenuItem::separator(app)?;
     let open = MenuItem::with_id(app, "open", "打开 Harness", true, None::<&str>)?;
+    let auto_retry = read_auto_retry();
+    let retry = CheckMenuItem::with_id(
+        app,
+        "auto-retry",
+        "自动重试",
+        true,
+        auto_retry,
+        None::<&str>,
+    )?;
     let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
     let action_separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "退出 MDSH", true, None::<&str>)?;
@@ -482,6 +554,7 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             &port,
             &status_separator,
             &open,
+            &retry,
             &update,
             &action_separator,
             &quit,
@@ -492,6 +565,7 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     *state.port_menu.lock().expect("端口菜单锁已损坏") = Some(port);
     *state.update_menu.lock().expect("更新菜单锁已损坏") = Some(update);
     *state.open_menu.lock().expect("打开菜单锁已损坏") = Some(open);
+    *state.retry_menu.lock().expect("自动重试菜单锁已损坏") = Some(retry);
     *state.quit_menu.lock().expect("退出菜单锁已损坏") = Some(quit);
     let tray = TrayIconBuilder::new()
         .icon(Image::new_owned(h_icon_rgba(false, false, None), 48, 48))
@@ -502,11 +576,29 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             "open" => {
                 if let Err(error) = show_harness(app) {
                     eprintln!("打开 Harness 失败：{error}");
+                    let state = app.state::<HarnessProcess>();
+                    if let Ok(menu) = state.status_menu.lock()
+                        && let Some(menu) = menu.as_ref()
+                    {
+                        let _ = menu.set_text(format!("状态：{error}"));
+                    }
+                }
+            }
+            "auto-retry" => {
+                let state = app.state::<HarnessProcess>();
+                let enabled = !read_auto_retry();
+                write_auto_retry(enabled);
+                if let Ok(menu) = state.retry_menu.lock()
+                    && let Some(menu) = menu.as_ref()
+                {
+                    let _ = menu.set_checked(enabled);
                 }
             }
             "update" => handle_updates_from_tray(app),
             "quit" => {
-                app.state::<HarnessProcess>().quitting.store(true, Ordering::Relaxed);
+                app.state::<HarnessProcess>()
+                    .quitting
+                    .store(true, Ordering::Relaxed);
                 app.exit(0);
             }
             _ => {}
@@ -520,52 +612,80 @@ fn refresh_usage_menu(app: &AppHandle) {
     let state = app.state::<HarnessProcess>();
     let raw = std::fs::read_to_string(&state.usage_path).unwrap_or_default();
     {
-let mut last = match state.last_usage.lock() {
-Ok(last) => last,
-Err(_) => return,
-};
-if *last == raw {
-return;
-}
-last.clone_from(&raw);
+        let mut last = match state.last_usage.lock() {
+            Ok(last) => last,
+            Err(_) => return,
+        };
+        if *last == raw {
+            return;
+        }
+        last.clone_from(&raw);
     }
-    let Some(status) = state.status_menu.lock().ok().and_then(|item| item.clone()) else { return };
-    let Some(port) = state.port_menu.lock().ok().and_then(|item| item.clone()) else { return };
-    let Some(open) = state.open_menu.lock().ok().and_then(|item| item.clone()) else { return };
-    let Some(update) = state.update_menu.lock().ok().and_then(|item| item.clone()) else { return };
-    let Some(quit) = state.quit_menu.lock().ok().and_then(|item| item.clone()) else { return };
-    let Ok(after_status) = PredefinedMenuItem::separator(app) else { return };
-    let Ok(after_usage) = PredefinedMenuItem::separator(app) else { return };
-    let Ok(before_quit) = PredefinedMenuItem::separator(app) else { return };
+    let Some(status) = state.status_menu.lock().ok().and_then(|item| item.clone()) else {
+        return;
+    };
+    let Some(port) = state.port_menu.lock().ok().and_then(|item| item.clone()) else {
+        return;
+    };
+    let Some(open) = state.open_menu.lock().ok().and_then(|item| item.clone()) else {
+        return;
+    };
+    let Some(retry) = state.retry_menu.lock().ok().and_then(|item| item.clone()) else {
+        return;
+    };
+    let Some(update) = state.update_menu.lock().ok().and_then(|item| item.clone()) else {
+        return;
+    };
+    let Some(quit) = state.quit_menu.lock().ok().and_then(|item| item.clone()) else {
+        return;
+    };
+    let Ok(after_status) = PredefinedMenuItem::separator(app) else {
+        return;
+    };
+    let Ok(after_usage) = PredefinedMenuItem::separator(app) else {
+        return;
+    };
+    let Ok(before_quit) = PredefinedMenuItem::separator(app) else {
+        return;
+    };
     let rows = visible_usage_rows(&raw, &today_date());
     let mut extras = Vec::new();
     if !rows.is_empty() {
-let Ok(header) = MenuItem::with_id(app, "usage-today", "今日 Token", false, None::<&str>) else { return };
-extras.push(header);
-for (index, (model, tokens)) in rows.into_iter().enumerate() {
-let Ok(item) = MenuItem::with_id(
-app,
-format!("usage-{index}"),
-format!("{model}  {}", format_tokens(tokens)),
-false,
-None::<&str>,
-) else { return };
-extras.push(item);
-}
+        let Ok(header) = MenuItem::with_id(app, "usage-today", "今日 Token", false, None::<&str>)
+        else {
+            return;
+        };
+        extras.push(header);
+        for (index, (model, tokens)) in rows.into_iter().enumerate() {
+            let Ok(item) = MenuItem::with_id(
+                app,
+                format!("usage-{index}"),
+                format!("{model}  {}", format_tokens(tokens)),
+                false,
+                None::<&str>,
+            ) else {
+                return;
+            };
+            extras.push(item);
+        }
     }
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&status, &port, &after_status];
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+        vec![&status, &port, &after_status];
     for extra in &extras {
-items.push(extra);
+        items.push(extra);
     }
     if !extras.is_empty() {
-items.push(&after_usage);
+        items.push(&after_usage);
     }
-    items.extend_from_slice(&[&open, &update, &before_quit, &quit]);
-    let Ok(menu) = Menu::with_items(app, &items) else { return };
+    items.extend_from_slice(&[&open, &retry, &update, &before_quit, &quit]);
+    let Ok(menu) = Menu::with_items(app, &items) else {
+        return;
+    };
     if let Ok(tray) = state.tray.lock()
-&& let Some(tray) = tray.as_ref() {
-let _ = tray.set_menu(Some(menu));
-}
+        && let Some(tray) = tray.as_ref()
+    {
+        let _ = tray.set_menu(Some(menu));
+    }
 }
 
 fn start_activity_animation(app: &AppHandle) {
@@ -581,22 +701,30 @@ fn start_activity_animation(app: &AppHandle) {
                 break;
             }
             refresh_usage_menu(&handle);
-            let core_ready = state.status.lock().is_ok_and(|status| status.as_str() == "ready");
-            let activity = std::fs::read_to_string(&state.activity_path)
-                .unwrap_or_else(|_| "idle".into());
+            let core_ready = state
+                .status
+                .lock()
+                .is_ok_and(|status| status.as_str() == "ready");
+            let activity =
+                std::fs::read_to_string(&state.activity_path).unwrap_or_else(|_| "idle".into());
             let activity = activity.trim();
             if (activity == "running" || activity != previous || core_ready != previous_core_ready)
                 && let Ok(tray) = state.tray.lock()
-                    && let Some(tray) = tray.as_ref() {
-                        let _ = tray.set_icon_with_as_template(
-                            Some(Image::new_owned(
-                                h_icon_rgba(core_ready, activity == "error", (activity == "running").then_some(frame)),
-                                48,
-                                48,
-                            )),
-                            false,
-                        );
-                    }
+                && let Some(tray) = tray.as_ref()
+            {
+                let _ = tray.set_icon_with_as_template(
+                    Some(Image::new_owned(
+                        h_icon_rgba(
+                            core_ready,
+                            activity == "error",
+                            (activity == "running").then_some(frame),
+                        ),
+                        48,
+                        48,
+                    )),
+                    false,
+                );
+            }
             previous.clear();
             previous.push_str(activity);
             previous_core_ready = core_ready;
@@ -633,7 +761,10 @@ fn repository_update_status(repository: &PathBuf, branch: &str) -> Result<Update
     })
 }
 
-fn summarize_updates(core: Result<UpdateStatus, String>, ui: Result<UpdateStatus, String>) -> String {
+fn summarize_updates(
+    core: Result<UpdateStatus, String>,
+    ui: Result<UpdateStatus, String>,
+) -> String {
     match (core, ui) {
         (Ok(core), Ok(ui)) => match (core.update_available, ui.update_available) {
             (true, true) => "发现核心和 UI 更新".into(),
@@ -656,7 +787,9 @@ fn available_updates(core: &Result<UpdateStatus, String>, ui: &Result<UpdateStat
 
 fn check_updates_from_tray(app: &AppHandle) {
     let state = app.state::<HarnessProcess>();
-    let Some(menu) = state.update_menu.lock().ok().and_then(|menu| menu.clone()) else { return };
+    let Some(menu) = state.update_menu.lock().ok().and_then(|menu| menu.clone()) else {
+        return;
+    };
     let core = state.root.join("core");
     let ui = state.root.join("web-ui");
     let handle = app.clone();
@@ -666,7 +799,10 @@ fn check_updates_from_tray(app: &AppHandle) {
         let core_status = repository_update_status(&core, "master");
         let ui_status = repository_update_status(&ui, "main");
         let updates = available_updates(&core_status, &ui_status);
-        handle.state::<HarnessProcess>().pending_updates.store(updates, Ordering::Relaxed);
+        handle
+            .state::<HarnessProcess>()
+            .pending_updates
+            .store(updates, Ordering::Relaxed);
         let mut label = summarize_updates(core_status, ui_status);
         if updates != 0 {
             label.push_str("（再次点击更新）");
@@ -705,7 +841,9 @@ fn handle_updates_from_tray(app: &AppHandle) {
         check_updates_from_tray(app);
         return;
     }
-    let Some(menu) = state.update_menu.lock().ok().and_then(|menu| menu.clone()) else { return };
+    let Some(menu) = state.update_menu.lock().ok().and_then(|menu| menu.clone()) else {
+        return;
+    };
     let root = state.root.clone();
     let handle = app.clone();
     let _ = menu.set_text("正在更新…");
@@ -727,7 +865,10 @@ fn handle_updates_from_tray(app: &AppHandle) {
             }
             Err(error) => {
                 eprintln!("更新失败：{error}");
-                handle.state::<HarnessProcess>().pending_updates.store(updates, Ordering::Relaxed);
+                handle
+                    .state::<HarnessProcess>()
+                    .pending_updates
+                    .store(updates, Ordering::Relaxed);
                 let _ = menu.set_text("更新失败（再次点击重试）");
             }
         }
@@ -772,13 +913,14 @@ pub fn run() {
     tauri::Builder::default()
         .on_window_event(|window, event| {
             #[cfg(target_os = "macos")]
-            if window.label() == "harness" && matches!(event, tauri::WindowEvent::Destroyed)
+            if window.label() == "harness"
+                && matches!(event, tauri::WindowEvent::Destroyed)
                 && let Err(error) = window
                     .app_handle()
                     .set_activation_policy(tauri::ActivationPolicy::Accessory)
-                {
-                    eprintln!("隐藏应用图标失败：{error}");
-                }
+            {
+                eprintln!("隐藏应用图标失败：{error}");
+            }
         })
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -787,7 +929,8 @@ pub fn run() {
                 set_app_icon().map_err(std::io::Error::other)?;
             }
 
-            let activity_path = std::env::temp_dir().join(format!("mdsh-model-{}.status", std::process::id()));
+            let activity_path =
+                std::env::temp_dir().join(format!("mdsh-model-{}.status", std::process::id()));
             let _ = std::fs::remove_file(&activity_path);
             let usage_path = usage_path();
             app.manage(HarnessProcess {
@@ -799,6 +942,7 @@ pub fn run() {
                 update_menu: Mutex::new(None),
                 pending_updates: AtomicU8::new(0),
                 open_menu: Mutex::new(None),
+                retry_menu: Mutex::new(None),
                 quit_menu: Mutex::new(None),
                 tray: Mutex::new(None),
                 quitting: AtomicBool::new(false),
@@ -812,12 +956,19 @@ pub fn run() {
             start_activity_animation(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![harness_status, open_harness, check_core_update])
+        .invoke_handler(tauri::generate_handler![
+            harness_status,
+            open_harness,
+            check_core_update
+        ])
         .build(tauri::generate_context!())
         .expect("无法构建 Tauri 应用")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { api, .. }
-                if !app.state::<HarnessProcess>().quitting.load(Ordering::Relaxed) =>
+                if !app
+                    .state::<HarnessProcess>()
+                    .quitting
+                    .load(Ordering::Relaxed) =>
             {
                 api.prevent_exit();
             }
