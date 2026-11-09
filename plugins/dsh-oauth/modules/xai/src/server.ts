@@ -105,27 +105,26 @@ export function assertSameOriginJson(
 
 /** 注册 xAI 管理接口到 0.2.2 已鉴权的 /api Fetch 通道。 */
 export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
-	ctx.inject(["connection"], (scope) => {
-		// SAFETY: plugin SDK types lag core; connection.fetch is on ctx at runtime.
-		const connection = (
-			scope as unknown as { connection: { fetch: ConnectionFetch } }
-		).connection;
-		const register = (
-			path: string,
-			methods: readonly ("GET" | "HEAD" | "POST")[],
-			fetch: (request: Request) => Promise<Response>,
-		): void => {
-			scope.effect(
-				() =>
-					connection.fetch.register({
-						path,
-						methods,
-						requestBody: "buffered",
-						fetch,
-					}),
-				`dsh-xai: ${path}`,
-			);
-		};
+	// SAFETY: plugin inject includes connection; this fiber already has ctx.connection.
+	const connection = (
+		ctx as unknown as { connection: { fetch: ConnectionFetch } }
+	).connection;
+	const register = (
+		path: string,
+		methods: readonly ("GET" | "HEAD" | "POST")[],
+		fetch: (request: Request) => Promise<Response>,
+	): void => {
+		ctx.effect(
+			() =>
+				connection.fetch.register({
+					path,
+					methods,
+					requestBody: "buffered",
+					fetch,
+				}),
+			`dsh-xai: ${path}`,
+		);
+	};
 
 		register(ACCOUNTS_PATH, ["GET"], async (request) => {
 			let includeQuota = true;
@@ -201,5 +200,4 @@ export function registerWebRoutes(ctx: Context, auth: XaiAuth): void {
 				});
 			}
 		});
-	});
 }

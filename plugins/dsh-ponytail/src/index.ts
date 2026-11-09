@@ -21,8 +21,6 @@ import { registerSkills } from "./skills.js";
 export const name = "ponytail";
 export const inject = ["systemPrompt", "commands", "settings", "skills"];
 
-const NS = "ponytail";
-
 export interface Config {
 	mode?: PonytailMode;
 }
@@ -39,29 +37,10 @@ function statusText(mode: PonytailMode): string {
 
 /** 注册每轮规则注入、/ponytail 切档和打包 skill。 */
 export function apply(ctx: Context, config: Config): void {
-	// SAFETY: plugin SDK types lag core; register() exists on ctx.settings at runtime.
-	const scope = (
-		ctx as unknown as {
-			settings: {
-				register: (
-					ns: string,
-					schema: z<Config>,
-					options: { base: Config },
-				) => {
-					get: () => Config;
-					update: (patch: Record<string, unknown>) => Promise<void>;
-					watch: (callback: (next: Config) => void) => () => void;
-				};
-			};
-		}
-	).settings.register(NS, Config, { base: config });
-	let mode: PonytailMode = parseStoredMode(scope.get().mode);
-
-	ctx.effect(() =>
-		scope.watch((next: Config) => {
-			mode = parseStoredMode(next.mode);
-		}),
-	);
+	let mode: PonytailMode = parseStoredMode(config.mode);
+	const entryId = (
+		ctx as Context & { fiber: { entry?: { options: { id?: string } } } }
+	).fiber.entry?.options.id;
 
 	ctx.systemPrompt.section({
 		name: "ponytail",
@@ -85,7 +64,9 @@ export function apply(ctx: Context, config: Config): void {
 					text: `Unknown Ponytail mode "${parsed.input}". Use lite, full, ultra, or off.`,
 				};
 			}
-			await scope.update({ mode: parsed.mode });
+			if (entryId !== undefined) {
+				await ctx.settings.update(entryId, { mode: parsed.mode });
+			}
 			mode = parsed.mode;
 			return { kind: "success", text: statusText(mode) };
 		},

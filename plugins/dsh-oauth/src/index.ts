@@ -14,7 +14,7 @@ import { enabledModules, OAUTH_MODULE_IDS } from "./modules.js";
 import { registerTodayUsage } from "./usage-today.js";
 
 export const name = "llm-oauth";
-export const inject = ["llm", "credentials", "commands", "settings"];
+export const inject = ["llm", "credentials", "commands", "settings", "connection"];
 
 export interface Config {
 	modules?: string[];
@@ -31,7 +31,11 @@ export const Config: z<Config> = z.object({
 export function apply(ctx: Context, config: Config): void {
 	const resolved = Config(config);
 	for (const module of enabledModules(resolved.modules)) {
-		module.apply(ctx, module.configOf(resolved));
+		try {
+			module.apply(ctx, module.configOf(resolved));
+		} catch (error) {
+			ctx.logger.error(error);
+		}
 	}
 	registerTodayUsage(ctx);
 }
