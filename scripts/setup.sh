@@ -5,6 +5,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 core="$root/core"
 oauth="$root/plugins/dsh-oauth"
 ponytail="$root/plugins/dsh-ponytail"
+superagent="$root/plugins/dsh-superagent"
 desktop="$root/desktop"
 
 # core 是只读 submodule；跳过其仓库级 Git hook 安装脚本。
@@ -24,9 +25,10 @@ CI=true pnpm --dir "$ponytail" install --frozen-lockfile
 pnpm --dir "$ponytail" build
 CI=true pnpm --dir "$desktop" install --frozen-lockfile
 
-bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$oauth"
-bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$ponytail"
-bash "$root/scripts/dsh-plugin.sh" --profile web add dshmarket
+bash "$root/scripts/dsh-plugin.sh" --profile superagent add "link:$oauth"
+bash "$root/scripts/dsh-plugin.sh" --profile superagent add "link:$ponytail"
+bash "$root/scripts/dsh-plugin.sh" --profile superagent add "link:$superagent"
+bash "$root/scripts/dsh-plugin.sh" --profile superagent add dshmarket
 bash "$root/scripts/setup-ui.sh"
 
 echo '初始化完成。运行 pnpm dev 启动 Tauri。'

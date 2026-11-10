@@ -21,7 +21,7 @@ pnpm bootstrap
 pnpm dev
 ```
 
-`pnpm bootstrap` 会安装并构建 core、`dsh-oauth` 插件以及 `dsh-web-ui` 全家桶，再通过 DSH CLI 安装到 Web profile。首次初始化默认启用“鲸吟（Whale Song）”皮肤和暗色“深海夜航调”；之后保留用户自行选择的皮肤与明暗设置。它不修改 `core/` 或 `web-ui/` 的 tracked 文件。
+`pnpm bootstrap` 会安装并构建 core、`dsh-oauth` 插件以及 `dsh-web-ui` 全家桶，再通过 DSH CLI 安装到 `superagent` profile。首次初始化默认启用“鲸吟（Whale Song）”皮肤和暗色“深海夜航调”；之后保留用户自行选择的皮肤与明暗设置。它不修改 `core/` 或 `web-ui/` 的 tracked 文件。
 
 ## 模型（OAuth）
 
@@ -64,7 +64,7 @@ pnpm ui:check
 pnpm ui:update
 ```
 
-状态栏“检查更新”会同时查看 `core/` 和 `web-ui/`；发现更新后再次点击即可更新、重建并重启 Harness。Web profile 默认安装 [dshmarket](https://dshmarket.com/)。
+状态栏“检查更新”会同时查看 `core/` 和 `web-ui/`；发现更新后再次点击即可更新、重建并重启 Harness。`superagent` profile 默认安装 [dshmarket](https://dshmarket.com/)。
 
 ## 当前边界
 

@@ -13,7 +13,7 @@ fi
 CI=true pnpm --dir "$ui" install --frozen-lockfile --fetch-timeout 300000 --fetch-retries 5
 pnpm --dir "$ui" build
 node "$ui/scripts/link-profile.mjs"
-bash "$root/scripts/dsh-plugin.sh" --profile web add "link:$ui/packages/dsh-web-ui-all"
+bash "$root/scripts/dsh-plugin.sh" --profile superagent add "link:$ui/packages/dsh-web-ui-all"
 
 if [[ "$(node "$ui/scripts/dsh-skin" current)" == "none" ]]; then
   node "$ui/scripts/dsh-skin" use whale-song
